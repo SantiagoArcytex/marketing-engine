@@ -59,7 +59,12 @@ export default function AIChat() {
         settings.secSummaryModel || undefined,
         settings.ollamaBaseUrl,
         settings.numCtx,
-        settings.numPredict
+        settings.numPredict,
+        settings.useCloud,
+        settings.cloudProvider,
+        settings.cloudApiKey,
+        settings.cloudModel || undefined,
+        settings.cloudBaseUrl || undefined
       );
       setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
     } catch (e) {

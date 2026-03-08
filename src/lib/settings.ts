@@ -104,6 +104,8 @@ const NUM_CTX_MAX = 16384;
 const NUM_PREDICT_MIN = 256;
 const NUM_PREDICT_MAX = 4096;
 
+export type CloudProviderId = "google" | "groq" | "openrouter";
+
 export type ChatSettings = {
   /** When set, SEC filings in chat context are summarized with this Ollama model (10-K highlights). */
   secSummaryModel: string;
@@ -113,6 +115,16 @@ export type ChatSettings = {
   numPredict: number;
   /** Ollama server URL. Use default unless you use a different server or port. */
   ollamaBaseUrl: string;
+  /** Use cloud API for chat (large context) instead of local Ollama. */
+  useCloud: boolean;
+  /** Cloud provider (used only when cloudBaseUrl is empty): google, groq, openrouter. */
+  cloudProvider: CloudProviderId;
+  /** Cloud API key. Prefer secure storage (e.g. keytar/stronghold) in production. */
+  cloudApiKey: string;
+  /** Model name (required when using custom base URL; optional override for fixed providers). */
+  cloudModel: string;
+  /** Optional API base URL for any OpenAI-compatible LLM (e.g. https://api.openai.com/v1). When set, cloudModel is used as the model name. */
+  cloudBaseUrl: string;
 };
 
 const CHAT_DEFAULTS: ChatSettings = {
@@ -120,6 +132,11 @@ const CHAT_DEFAULTS: ChatSettings = {
   numCtx: 4096,
   numPredict: 2048,
   ollamaBaseUrl: "http://localhost:11434",
+  useCloud: false,
+  cloudProvider: "google",
+  cloudApiKey: "",
+  cloudModel: "",
+  cloudBaseUrl: "",
 };
 
 function clampNumCtx(n: number): number {
@@ -143,11 +160,21 @@ export function getChatSettings(): ChatSettings {
     const raw = localStorage.getItem(CHAT_SETTINGS_KEY);
     if (!raw) return { ...CHAT_DEFAULTS };
     const parsed = JSON.parse(raw) as Partial<ChatSettings>;
+    const provider = parsed.cloudProvider as string | undefined;
+    const validProvider =
+      provider === "google" || provider === "groq" || provider === "openrouter"
+        ? provider
+        : CHAT_DEFAULTS.cloudProvider;
     return {
       secSummaryModel: typeof parsed.secSummaryModel === "string" ? parsed.secSummaryModel.trim() : CHAT_DEFAULTS.secSummaryModel,
       numCtx: clampNumCtx(Number(parsed.numCtx) || CHAT_DEFAULTS.numCtx),
       numPredict: clampNumPredict(Number(parsed.numPredict) || CHAT_DEFAULTS.numPredict),
       ollamaBaseUrl: typeof parsed.ollamaBaseUrl === "string" ? normalizeOllamaBaseUrl(parsed.ollamaBaseUrl) : CHAT_DEFAULTS.ollamaBaseUrl,
+      useCloud: typeof parsed.useCloud === "boolean" ? parsed.useCloud : CHAT_DEFAULTS.useCloud,
+      cloudProvider: validProvider,
+      cloudApiKey: typeof parsed.cloudApiKey === "string" ? parsed.cloudApiKey.trim() : CHAT_DEFAULTS.cloudApiKey,
+      cloudModel: typeof parsed.cloudModel === "string" ? parsed.cloudModel.trim() : CHAT_DEFAULTS.cloudModel,
+      cloudBaseUrl: typeof parsed.cloudBaseUrl === "string" ? parsed.cloudBaseUrl.trim() : CHAT_DEFAULTS.cloudBaseUrl,
     };
   } catch {
     return { ...CHAT_DEFAULTS };
@@ -156,11 +183,21 @@ export function getChatSettings(): ChatSettings {
 
 export function setChatSettings(next: Partial<ChatSettings>): ChatSettings {
   const current = getChatSettings();
+  const nextProvider = next.cloudProvider;
+  const validProvider =
+    nextProvider === "google" || nextProvider === "groq" || nextProvider === "openrouter"
+      ? nextProvider
+      : current.cloudProvider;
   const merged: ChatSettings = {
     secSummaryModel: next.secSummaryModel !== undefined ? next.secSummaryModel.trim() : current.secSummaryModel,
     numCtx: next.numCtx !== undefined ? clampNumCtx(next.numCtx) : current.numCtx,
     numPredict: next.numPredict !== undefined ? clampNumPredict(next.numPredict) : current.numPredict,
     ollamaBaseUrl: next.ollamaBaseUrl !== undefined ? normalizeOllamaBaseUrl(next.ollamaBaseUrl) : current.ollamaBaseUrl,
+    useCloud: next.useCloud !== undefined ? next.useCloud : current.useCloud,
+    cloudProvider: next.cloudProvider !== undefined ? validProvider : current.cloudProvider,
+    cloudApiKey: next.cloudApiKey !== undefined ? next.cloudApiKey.trim() : current.cloudApiKey,
+    cloudModel: next.cloudModel !== undefined ? next.cloudModel.trim() : current.cloudModel,
+    cloudBaseUrl: next.cloudBaseUrl !== undefined ? next.cloudBaseUrl.trim() : current.cloudBaseUrl,
   };
   try {
     localStorage.setItem(CHAT_SETTINGS_KEY, JSON.stringify(merged));

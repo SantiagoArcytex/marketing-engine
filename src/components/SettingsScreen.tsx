@@ -18,7 +18,6 @@ import {
   removeCustomMode,
   type CustomAgentMode,
 } from "@/lib/agentModes";
-import { PERSONA_LIBRARY } from "@/lib/personaLibrary";
 import { api } from "@/api/client";
 import { toast } from "sonner";
 
@@ -55,7 +54,7 @@ export default function SettingsScreen() {
     const label = newLabel.trim();
     const systemPrompt = newPrompt.trim();
     if (!label || !systemPrompt) {
-      toast.error("Label and system prompt are required.");
+      toast.error("Name and system prompt are required.");
       return;
     }
     addCustomMode(label, systemPrompt);
@@ -63,7 +62,7 @@ export default function SettingsScreen() {
     setAddOpen(false);
     setNewLabel("");
     setNewPrompt("");
-    toast.success("Mode added.");
+    toast.success("Agent added.");
   };
 
   const handleRemoveMode = (id: string) => {
@@ -84,20 +83,11 @@ export default function SettingsScreen() {
     }
   };
 
-  const isPersonaInstalled = (name: string) =>
-    customModes.some((m) => m.label.toLowerCase().trim() === name.toLowerCase().trim());
-
-  const handleInstallPersona = (name: string, systemPrompt: string) => {
-    addCustomMode(name, systemPrompt);
-    setCustomModes(getCustomModes());
-    toast.success(`"${name}" added to custom modes.`);
-  };
-
   return (
     <div className="space-y-8 max-w-2xl">
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Settings</h2>
-        <p className="text-muted-foreground mt-1">AI timeouts, scraping options, and custom chat agent modes.</p>
+        <p className="text-muted-foreground mt-1">AI timeouts, scraping options, and custom agents.</p>
       </div>
 
       <Card>
@@ -169,108 +159,168 @@ export default function SettingsScreen() {
               onChange={(e) => updateTimeout("strategy", parseInt(e.target.value, 10) || 120)}
             />
           </label>
-          <label className="grid gap-1.5">
-            <span className="text-sm font-medium">SEC summary model (optional)</span>
-            <Input
-              type="text"
-              placeholder="e.g. llama3.2 (leave empty for raw SEC list)"
-              value={chatSettings.secSummaryModel}
-              onChange={(e) => updateChatSettings({ secSummaryModel: e.target.value })}
-            />
-            <p className="text-xs text-muted-foreground">
-              When set, SEC filings in chat context are summarized into 2–3 key points per company. Saves context tokens; requires an extra Ollama call per message.
-            </p>
-          </label>
-          <div className="border-t border-border pt-4 mt-2 space-y-4">
-            <p className="text-sm font-medium">Inference / speed</p>
-            <p className="text-xs text-muted-foreground">
-              Lower context and max tokens = faster replies. Use defaults unless you need longer context or answers.
-            </p>
-            <label className="grid gap-1.5">
-              <span className="text-sm font-medium">Context size (num_ctx)</span>
-              <Input
-                type="number"
-                min={512}
-                max={16384}
-                value={chatSettings.numCtx}
-                onChange={(e) => updateChatSettings({ numCtx: parseInt(e.target.value, 10) || 4096 })}
-              />
-              <p className="text-xs text-muted-foreground">Lower = faster, less context.</p>
-            </label>
-            <label className="grid gap-1.5">
-              <span className="text-sm font-medium">Max tokens (num_predict)</span>
-              <Input
-                type="number"
-                min={256}
-                max={4096}
-                value={chatSettings.numPredict}
-                onChange={(e) => updateChatSettings({ numPredict: parseInt(e.target.value, 10) || 2048 })}
-              />
-              <p className="text-xs text-muted-foreground">Lower = faster, shorter replies.</p>
-            </label>
-            <label className="grid gap-1.5">
-              <span className="text-sm font-medium">Ollama URL</span>
-              <Input
-                type="url"
-                placeholder="http://localhost:11434"
-                value={chatSettings.ollamaBaseUrl}
-                onChange={(e) => updateChatSettings({ ollamaBaseUrl: e.target.value })}
-              />
-              <p className="text-xs text-muted-foreground">Leave default unless you use a different server or port.</p>
-            </label>
-          </div>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Persona library</CardTitle>
+          <CardTitle>Chat backend</CardTitle>
           <CardDescription>
-            Curated personas you can add to your custom modes. Install to use them in the chat persona selector; you can still export Modelfiles from custom modes.
+            Choose between a local Ollama model or cloud APIs (Gemini, Groq, OpenRouter) for chat. Local is in development.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          {PERSONA_LIBRARY.map((persona) => {
-            const installed = isPersonaInstalled(persona.name);
-            return (
-              <div
-                key={persona.name}
-                className="flex flex-col gap-1.5 rounded-lg border border-border p-3"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="font-medium text-sm">{persona.name}</p>
-                    <p className="text-xs text-muted-foreground">{persona.description}</p>
+        <CardContent className="grid gap-4">
+          <fieldset className="grid gap-4">
+            <legend className="text-sm font-medium sr-only">Chat backend</legend>
+            <div className="flex flex-col gap-2">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="chat-backend"
+                  checked={!chatSettings.useCloud}
+                  onChange={() => updateChatSettings({ useCloud: false })}
+                  className="border-input"
+                />
+                <span className="text-sm">Local (Ollama) — In development</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="chat-backend"
+                  checked={chatSettings.useCloud}
+                  onChange={() => updateChatSettings({ useCloud: true })}
+                  className="border-input"
+                />
+                <span className="text-sm">Cloud API (Gemini, Groq, OpenRouter)</span>
+              </label>
+            </div>
+
+            {!chatSettings.useCloud && (
+              <Card className="bg-muted/30">
+                <CardHeader className="py-3">
+                  <CardTitle className="text-sm">Local (Ollama) options</CardTitle>
+                  <CardDescription className="text-xs">
+                    Local inference is experimental and may change.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 pt-0">
+                  <label className="grid gap-1.5">
+                    <span className="text-sm font-medium">SEC summary model (optional)</span>
+                    <Input
+                      type="text"
+                      placeholder="e.g. llama3.2 (leave empty for raw SEC list)"
+                      value={chatSettings.secSummaryModel}
+                      onChange={(e) => updateChatSettings({ secSummaryModel: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      When set, SEC filings in chat context are summarized into 2–3 key points per company. Saves context tokens; requires an extra Ollama call per message.
+                    </p>
+                  </label>
+                  <div className="space-y-4">
+                    <p className="text-sm font-medium">Inference / speed</p>
+                    <p className="text-xs text-muted-foreground">
+                      Lower context and max tokens = faster replies. Use defaults unless you need longer context or answers.
+                    </p>
+                    <label className="grid gap-1.5">
+                      <span className="text-sm font-medium">Context size (num_ctx)</span>
+                      <Input
+                        type="number"
+                        min={512}
+                        max={16384}
+                        value={chatSettings.numCtx}
+                        onChange={(e) => updateChatSettings({ numCtx: parseInt(e.target.value, 10) || 4096 })}
+                      />
+                      <p className="text-xs text-muted-foreground">Lower = faster, less context.</p>
+                    </label>
+                    <label className="grid gap-1.5">
+                      <span className="text-sm font-medium">Max tokens (num_predict)</span>
+                      <Input
+                        type="number"
+                        min={256}
+                        max={4096}
+                        value={chatSettings.numPredict}
+                        onChange={(e) => updateChatSettings({ numPredict: parseInt(e.target.value, 10) || 2048 })}
+                      />
+                      <p className="text-xs text-muted-foreground">Lower = faster, shorter replies.</p>
+                    </label>
+                    <label className="grid gap-1.5">
+                      <span className="text-sm font-medium">Ollama URL</span>
+                      <Input
+                        type="url"
+                        placeholder="http://localhost:11434"
+                        value={chatSettings.ollamaBaseUrl}
+                        onChange={(e) => updateChatSettings({ ollamaBaseUrl: e.target.value })}
+                      />
+                      <p className="text-xs text-muted-foreground">Leave default unless you use a different server or port.</p>
+                    </label>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={installed}
-                    onClick={() => handleInstallPersona(persona.name, persona.systemPrompt)}
-                  >
-                    {installed ? "Installed" : "Install"}
-                  </Button>
-                </div>
-              </div>
-            );
-          })}
+                </CardContent>
+              </Card>
+            )}
+
+            {chatSettings.useCloud && (
+              <Card className="bg-muted/30">
+                <CardHeader className="py-3">
+                  <CardTitle className="text-sm">Cloud API options</CardTitle>
+                  <CardDescription className="text-xs">
+                    Use any LLM API: add your API key and the model name. Optionally set an API base URL for OpenAI-compatible endpoints. Do not send sensitive client data to free-tier APIs.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 pt-0">
+                  <label className="grid gap-1.5">
+                    <span className="text-sm font-medium">API key</span>
+                    <Input
+                      type="password"
+                      placeholder="Paste your API key"
+                      value={chatSettings.cloudApiKey}
+                      onChange={(e) => updateChatSettings({ cloudApiKey: e.target.value })}
+                    />
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="text-sm font-medium">Model name</span>
+                    <Input
+                      type="text"
+                      placeholder="e.g. gpt-4o, gemini-2.0-flash, llama-4-scout-17b-16e-instant"
+                      value={chatSettings.cloudModel}
+                      onChange={(e) => updateChatSettings({ cloudModel: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Name of the model to use. Required when using a custom API base URL.
+                    </p>
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="text-sm font-medium">API base URL (optional)</span>
+                    <Input
+                      type="url"
+                      placeholder="e.g. https://api.openai.com/v1 or https://openrouter.ai/api/v1"
+                      value={chatSettings.cloudBaseUrl}
+                      onChange={(e) => updateChatSettings({ cloudBaseUrl: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Leave empty to use a default (OpenRouter). Set this to use any OpenAI-compatible API.
+                    </p>
+                  </label>
+                </CardContent>
+              </Card>
+            )}
+          </fieldset>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Custom agent modes</CardTitle>
+          <CardTitle>Custom agents</CardTitle>
           <CardDescription>
-            Create modes that appear in the chat persona selector. Export a Modelfile (e.g. Modelfile.qwen) to use with Ollama.
+            Add and name custom agents that appear in the chat persona selector. Give each agent a name and a system prompt; you can export a Modelfile for Ollama.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Button variant="outline" size="sm" onClick={() => setAddOpen(true)}>
             <Plus className="size-4 mr-2" />
-            Add mode
+            Add custom agent
           </Button>
           {customModes.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No custom modes yet. Add one to prompt your own agent persona.</p>
+            <p className="text-sm text-muted-foreground">No custom agents yet. Add one and name them to use in chat.</p>
           ) : (
             <ul className="space-y-3">
               {customModes.map((mode) => (
@@ -313,16 +363,16 @@ export default function SettingsScreen() {
       <Dialog open={addOpen} onOpenChange={(open) => setAddOpen(open)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Add custom mode</DialogTitle>
+            <DialogTitle>Add custom agent</DialogTitle>
             <DialogDescription>
-              Give the mode a label and a system prompt. It will appear in the chat persona selector and you can export a Modelfile for Ollama.
+              Name your agent and set its system prompt. It will appear in the chat persona selector; you can export a Modelfile for Ollama.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2">
             <label className="grid gap-1.5">
-              <span className="text-sm font-medium">Label</span>
+              <span className="text-sm font-medium">Name</span>
               <Input
-                placeholder="e.g. Brand voice"
+                placeholder="e.g. Brand voice, SaaS expert"
                 value={newLabel}
                 onChange={(e) => setNewLabel(e.target.value)}
               />

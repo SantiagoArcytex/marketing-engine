@@ -9,6 +9,8 @@ use crate::ollama;
 use crate::sec;
 
 const RAG_TOP_K: usize = 10;
+/// When using cloud (large context), include up to this many ads without RAG.
+const FULL_CONTEXT_ADS_LIMIT: i32 = 2000;
 
 /// Tool: query ads (recent N).
 fn tool_query_ads(conn: &Connection, limit: i32) -> Result<Vec<(String, String, String)>, String> {
@@ -83,18 +85,23 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// - Backends (Ollama, future MLX) can cache the prefix and avoid re-reading it (prefix caching).
 /// When user_message and embedding_model are provided and ad_embeddings exist, injects top-K similar ads (RAG).
 /// When sec_summary_model is Some, the raw SEC filings section is summarized via Ollama into "10-K highlights".
+/// When full_context_for_cloud is true, skip RAG and include up to FULL_CONTEXT_ADS_LIMIT ads (for cloud APIs with large context).
 pub fn build_chat_context(
     db_path: &Path,
     user_message: Option<&str>,
     embedding_model: Option<&str>,
     sec_summary_model: Option<&str>,
+    full_context_for_cloud: bool,
 ) -> Result<String, String> {
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     let (hooks, emotions, offers) = tool_pattern_stats(&conn)?;
     let email_summary = tool_verified_emails_summary(&conn).unwrap_or_default();
 
-    let ads = if let (Some(msg), Some(model)) = (user_message, embedding_model) {
-        if let Ok(query_emb) = ollama::ollama_embed(model, msg) {
+    let (ads, ads_cap): (Vec<_>, usize) = if full_context_for_cloud {
+        let all = tool_query_ads(&conn, FULL_CONTEXT_ADS_LIMIT)?;
+        (all.clone(), all.len())
+    } else if let (Some(msg), Some(model)) = (user_message, embedding_model) {
+        let ads = if let Ok(query_emb) = ollama::ollama_embed(model, msg) {
             if let Ok(stored) = db::get_all_ad_embeddings(&conn) {
                 if !stored.is_empty() {
                     let mut with_sim: Vec<(i64, f32)> = stored
@@ -116,14 +123,16 @@ pub fn build_chat_context(
             }
         } else {
             tool_query_ads(&conn, 20)?
-        }
+        };
+        (ads, 15)
     } else {
-        tool_query_ads(&conn, 20)?
+        let ads = tool_query_ads(&conn, 20)?;
+        (ads.clone(), 15.min(ads.len()))
     };
 
     let mut ctx = String::new();
     ctx.push_str("## Ads (recent or similar, content | hook | offer)\n");
-    for (content, hook, offer) in ads.iter().take(15) {
+    for (content, hook, offer) in ads.iter().take(ads_cap) {
         let content_preview = content.chars().take(100).collect::<String>();
         ctx.push_str(&format!("- {} | Hook: {} | Offer: {}\n", content_preview, hook, offer));
     }
@@ -230,7 +239,7 @@ pub fn run_strategy_agent_llm(
     model: &str,
     timeout_secs: Option<u64>,
 ) -> Result<String, String> {
-    let context = build_chat_context(db_path, None, None, None).unwrap_or_default();
+    let context = build_chat_context(db_path, None, None, None, false).unwrap_or_default();
     let prompt = format!(
         "Given the following marketing data, produce a concise strategy report for this query. Output markdown with sections: **Optimal Strategy**, **Key Takeaways**, and optional **Sample ad copy**. Be actionable and specific.\n\nQuery: {}",
         query.trim()

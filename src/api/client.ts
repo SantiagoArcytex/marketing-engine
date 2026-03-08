@@ -161,7 +161,12 @@ export const api = {
     secSummaryModel?: string | null,
     ollamaBaseUrl?: string | null,
     numCtx?: number | null,
-    numPredict?: number | null
+    numPredict?: number | null,
+    useCloud?: boolean | null,
+    cloudProvider?: string | null,
+    cloudApiKey?: string | null,
+    cloudModel?: string | null,
+    cloudBaseUrl?: string | null
   ): Promise<string> {
     const result = await invoke<string>("ollama_chat", {
       model,
@@ -172,6 +177,11 @@ export const api = {
       ollama_base_url: ollamaBaseUrl?.trim() || undefined,
       num_ctx: numCtx ?? undefined,
       num_predict: numPredict ?? undefined,
+      use_cloud: useCloud ?? undefined,
+      cloud_provider: cloudProvider?.trim() || undefined,
+      cloud_api_key: cloudApiKey?.trim() || undefined,
+      cloud_model: cloudModel?.trim() || undefined,
+      cloud_base_url: cloudBaseUrl?.trim() || undefined,
     });
     return typeof result === "string" ? result : "";
   },
@@ -184,7 +194,12 @@ export const api = {
     secSummaryModel?: string | null,
     ollamaBaseUrl?: string | null,
     numCtx?: number | null,
-    numPredict?: number | null
+    numPredict?: number | null,
+    useCloud?: boolean | null,
+    cloudProvider?: string | null,
+    cloudApiKey?: string | null,
+    cloudModel?: string | null,
+    cloudBaseUrl?: string | null
   ): Promise<void> {
     await invoke("ollama_chat_stream", {
       model,
@@ -194,6 +209,11 @@ export const api = {
       ollama_base_url: ollamaBaseUrl?.trim() || undefined,
       num_ctx: numCtx ?? undefined,
       num_predict: numPredict ?? undefined,
+      use_cloud: useCloud ?? undefined,
+      cloud_provider: cloudProvider?.trim() || undefined,
+      cloud_api_key: cloudApiKey?.trim() || undefined,
+      cloud_model: cloudModel?.trim() || undefined,
+      cloud_base_url: cloudBaseUrl?.trim() || undefined,
     });
   },
 

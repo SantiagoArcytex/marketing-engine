@@ -8,10 +8,10 @@ This document describes the **system design and built intent** of the Marketing 
 
 The **Marketing Intelligence Engine** is a **local-first desktop application** for marketing research and intelligence. Its built intent is:
 
-- **Local-first**: All primary data (ads, verified emails, pattern stats) and processing live on the user’s machine. No required cloud services; optional use of a local LLM (Ollama) for chat and strategy.
-- **Privacy and cost**: No upload of ads or email lists to third parties. LLM inference runs locally via Ollama when used, avoiding per-token cloud costs.
+- **Local-first with optional cloud**: All primary data (ads, verified emails, pattern stats) and processing live on the user’s machine. Chat can use a **local LLM (Ollama)** or a **cloud API** (any OpenAI-compatible endpoint or built-in Gemini/OpenRouter/Groq). No required cloud; you choose.
+- **Privacy and cost**: No upload of ads or email lists to third parties unless you opt into cloud chat. Local inference via Ollama avoids per-token cost; cloud is optional and uses your API keys.
 - **Unified workspace**: One app that combines ad discovery, pattern analysis, email verification, optional SEC data, and an AI assistant that can reason over this data when the user asks.
-- **Extensibility**: User-definable agent modes (personas) and export of Modelfiles so personas can be run as dedicated Ollama models.
+- **Extensibility**: Add and name **custom agents** (label + system prompt); they appear in the chat persona selector. Export Modelfiles from Settings so personas can be run as dedicated Ollama models.
 
 The system is **not** a generic CRM or campaign manager. It is focused on **research and intelligence**: ingesting and structuring ad copy, verifying email lists, and providing a single place to query and reason over that data with an AI assistant.
 
@@ -48,7 +48,7 @@ flowchart LR
 - **Frontend**: React 19, Vite, TypeScript. Tailwind CSS and shared UI primitives (Base UI / shadcn-style). Single-page app with a sidebar for modules and a floating chat overlay.
 - **Backend**: Tauri 2 (Rust). Commands exposed via `invoke('command_name', payload)`. No REST API; all backend access is through Tauri IPC.
 - **Storage**: SQLite database (`engine.db`) in the Tauri app data directory. Tables: `ads`, `verified_emails`. Frontend uses `localStorage` for UI state (chat sessions, custom agent modes, AI timeouts, overlay position).
-- **Optional external**: Ollama (localhost) for chat and strategy; SEC EDGAR (public API) for company tickers and filings; HTTP for ad scraping and optional URL fetch in chat.
+- **Optional external**: Ollama (localhost) for local chat and strategy; optional **cloud LLM** (any OpenAI-compatible API or Gemini/OpenRouter/Groq) when enabled in Settings; SEC EDGAR (public API) for company tickers and filings; HTTP for ad scraping and optional URL fetch in chat.
 
 ---
 
@@ -88,10 +88,16 @@ The app exposes three main modules in the sidebar plus a global chat overlay. Ea
 
 ### 4.3 Settings
 
-**Intent**: Configure AI timeouts and define custom chat personas that can be exported as Ollama Modelfiles.
+**Intent**: Configure AI timeouts, choose chat backend (Local vs Cloud), and add custom agents that can be exported as Ollama Modelfiles.
 
-- **AI timeouts**: Copywriting, chat, and strategy request timeouts (seconds) stored in `localStorage`; used by the frontend when calling Ollama-related commands.
-- **Custom agent modes**: User adds modes with a label and system prompt; stored in `localStorage` under `custom-agent-modes`. Each mode appears in the chat persona selector. “Create Modelfile” opens a save dialog; backend command `write_modelfile(path, name, system_prompt)` writes an Ollama Modelfile (FROM qwen2.5, SYSTEM, PARAMETERs) so the user can run `ollama create ...` locally.
+Settings are grouped in cards:
+
+- **Scraping**: Proxy URL (optional), rate limit (requests per minute).
+- **AI timeouts**: Copywriting, chat, and strategy request timeouts (seconds) stored in `localStorage`; used when calling Ollama or cloud commands.
+- **Chat backend**: Choose **Local (Ollama)** or **Cloud API**.
+  - **Local (Ollama)** — in development: SEC summary model (optional), inference/speed (num_ctx, num_predict), Ollama URL. Local inference is experimental.
+  - **Cloud API**: Use any LLM: **API key**, **model name** (e.g. `gpt-4o`, `gemini-2.0-flash`), and optional **API base URL**. If base URL is set, the app calls that OpenAI-compatible endpoint with your model name; if left empty, a default (OpenRouter) is used. No provider dropdown — you name the model and optionally point to any compatible API.
+- **Custom agents**: Add agents with a **name** and system prompt; stored in `localStorage` under `custom-agent-modes`. Each appears in the chat persona selector. “Create Modelfile” opens a save dialog; backend `write_modelfile(path, name, system_prompt)` writes an Ollama Modelfile so you can run `ollama create ...` locally.
 
 ### 4.4 Chat overlay (FAB)
 
@@ -100,7 +106,8 @@ The app exposes three main modules in the sidebar plus a global chat overlay. Ea
 - **Sessions**: Chat sessions (id, title, messages) stored in `localStorage`. User can create, rename, delete, and switch chats; layout (side panel or bottom bar) is persisted.
 - **Personas**: Built-in modes (e.g. create_copy, strategy, funnel, competitor, general) plus custom modes from Settings. Each mode has a system prompt and an optional recommended Ollama model name. Frontend merges built-in and custom modes and shows a selector with icons.
 - **Context injection**: Before sending the user message, the frontend (or backend) requests a context string: recent ads (content/hook/offer), pattern stats (top hooks/emotions/offers), verified-email counts, and optionally SEC company/filing summary. This is appended to the prompt so the model can answer using “your data” when relevant.
-- **Ollama**: List models, send chat (with optional stream), prewarm model. Timeouts come from Settings. If the selected persona has a recommended model and it appears in the list, it can be auto-selected.
+- **Backend choice**: When **Local (Ollama)** is selected: list models, send chat (with optional stream), prewarm model; timeouts and num_ctx/num_predict come from Settings. When **Cloud API** is selected: no model list; chat uses your API key, model name, and optional base URL; the FAB and overlay show “Cloud” so the choice is visible at a glance.
+- **Ollama (local)**: If the selected persona has a recommended model and it appears in the list, it can be auto-selected.
 - **Protocols**: System prompts instruct the model to use `[CLARIFY: option1 | option2 | option3]` for choices and `[FETCH: https://url]` for external URLs; the frontend parses these and shows UI (e.g. Allow/Deny fetch) and can call `fetch_url` (backend, HTTPS only) then re-send with fetched content.
 
 ---
@@ -116,8 +123,9 @@ The app exposes three main modules in the sidebar plus a global chat overlay. Ea
 | **sec** | SEC EDGAR: company tickers JSON, submissions by CIK, filing list (form, date, accession). |
 | **strategy_agent** | “Tools”: query ads, pattern stats, verified-email summary; `build_chat_context`; optional LLM run to produce a strategy report (markdown). |
 | **ollama** | List models, chat (blocking and stream), prewarm; `build_chat_prompt` (system + context + user + clarify instruction). |
+| **remote_client** | Cloud chat: OpenAI-compatible (any base URL or OpenRouter/Groq) and Google Gemini. Optional `cloud_base_url` for custom endpoints; when set, `cloud_model` is the model name. |
 
-Tauri commands wire these into the frontend: e.g. `scrape_ads`, `clear_ads`, `list_ads_cmd`, `analyze_patterns`, `get_pattern_stats_cmd`, `verify_email_cmd`, `verify_email_and_store`, `verify_bulk`, `get_verified_emails`, `write_export_file`, `write_modelfile`, `fetch_url`, `run_strategy_agent_cmd`, `generate_copy_variants`, `ollama_list_models`, `ollama_chat`, `ollama_chat_stream`, `ollama_prewarm`, `sec_fetch_company_tickers`, `sec_company_filings`.
+Tauri commands wire these into the frontend: e.g. `scrape_ads`, `clear_ads`, `list_ads_cmd`, `analyze_patterns`, `get_pattern_stats_cmd`, `verify_email_cmd`, `verify_email_and_store`, `verify_bulk`, `get_verified_emails`, `write_export_file`, `write_modelfile`, `fetch_url`, `run_strategy_agent_cmd`, `generate_copy_variants`, `ollama_list_models`, `ollama_chat`, `ollama_chat_stream`, `ollama_prewarm`, `sec_fetch_company_tickers`, `sec_company_filings`. Chat commands accept `use_cloud`, `cloud_api_key`, `cloud_model`, and `cloud_base_url` for cloud routing.
 
 ---
 
@@ -125,7 +133,7 @@ Tauri commands wire these into the frontend: e.g. `scrape_ads`, `clear_ads`, `li
 
 1. **Ad pipeline**: User keyword → `scrape_ads` → fetch/parse or demo data → `insert_ads` → DB. User clicks “Analyze patterns” → `analyze_patterns` → `update_ad_patterns` → DB. UI reads via `list_ads_cmd`, `get_pattern_stats_cmd`.
 2. **Email pipeline**: User email or file → `verify_email_*` / `verify_bulk` → `upsert_verified_email` → DB. UI reads via `get_verified_emails`. Export: build CSV in frontend, save dialog, `write_export_file`.
-3. **Chat**: User selects model and persona; frontend gets `getSystemPromptForMode(id)` and (for context) backend builds context from DB (and optionally SEC). Frontend calls `ollama_chat_stream` (or `ollama_chat`) with prompt built from system prompt + context + user message. Streamed tokens are rendered in the overlay; [CLARIFY] and [FETCH] are parsed and handled in the UI.
+3. **Chat**: User selects persona (and, for local backend, an Ollama model). Frontend gets `getSystemPromptForMode(id)` and backend builds context from DB (and optionally SEC). Frontend calls `ollama_chat_stream` (or `ollama_chat`) with system prompt + context + user message. If **Cloud API** is enabled, backend uses `remote_chat` (API key, optional base URL, model name); otherwise local Ollama. Streamed tokens are rendered in the overlay; [CLARIFY] and [FETCH] are parsed and handled in the UI.
 4. **Modelfile export**: Settings → user defines mode (label + prompt) → “Create Modelfile” → save dialog → `write_modelfile(path, name, system_prompt)` → file on disk for `ollama create`.
 
 ---
@@ -135,7 +143,7 @@ Tauri commands wire these into the frontend: e.g. `scrape_ads`, `clear_ads`, `li
 Personas define how the assistant behaves and what it emphasizes:
 
 - **Built-in**: Create copy, Strategy, Funnel analysis, Competitor analysis, General. Each has a fixed system prompt and a recommended model name (e.g. `ads-engine-copy`). Shipped Modelfiles in `resources/modelfiles/` match these for users who run Ollama.
-- **Custom**: Stored in `localStorage`; label, system prompt, and generated id/recommendedModelName. User can export a Modelfile from Settings so the same persona can be used as a dedicated Ollama model.
+- **Custom agents**: Add and name your own agents in Settings (name + system prompt). Stored in `localStorage` under `custom-agent-modes` with generated id and recommendedModelName. Export a Modelfile from Settings to run the same persona as a dedicated Ollama model.
 
 The chat overlay uses a single “market expert” entry point; the chosen mode only changes the system prompt (and optionally the suggested model). Strategy/funnel/competitor/copy are **intents** implemented via prompts and optional dedicated models, not separate app modules.
 
@@ -152,7 +160,7 @@ The chat overlay uses a single “market expert” entry point; the chosen mode 
 | Charts | ECharts (echarts-for-react) |
 | Backend | Rust (rusqlite, reqwest, scraper, trust-dns-resolver, serde) |
 | DB | SQLite (engine.db in app data dir) |
-| LLM | Ollama (localhost), optional |
+| LLM | Ollama (localhost) for local chat; optional cloud (any OpenAI-compatible API or Gemini/OpenRouter/Groq via API key + model name ± base URL) |
 | Plugins | tauri-plugin-dialog, tauri-plugin-opener |
 
 ---
@@ -189,4 +197,4 @@ Use this checklist to run the stack for maximum tokens/second and minimum "think
 
 ## 11. Summary
 
-The Marketing Intelligence Engine is a **local-first desktop system** for marketing research: **ingest and structure ad copy**, **verify and manage email lists**, and **query and reason over that data** with an optional local LLM. Its design emphasizes **privacy**, **no required cloud**, and **extensibility** (custom personas, Modelfile export). The architecture is a Tauri backend (Rust, SQLite, scraping, email verification, SEC, Ollama) plus a React frontend with three main modules (Ad Explorer, Email Intelligence, Settings) and a global chat overlay that unifies data and personas into one assistant experience.
+The Marketing Intelligence Engine is a **local-first desktop system** for marketing research: **ingest and structure ad copy**, **verify and manage email lists**, and **query and reason over that data** with an optional **local LLM (Ollama)** or **cloud API** (any OpenAI-compatible endpoint; you supply API key and model name). Its design emphasizes **privacy**, **no required cloud**, and **extensibility** (add and name custom agents, Modelfile export). The architecture is a Tauri backend (Rust, SQLite, scraping, email verification, SEC, Ollama, remote_client for cloud chat) plus a React frontend with three main modules (Ad Explorer, Email Intelligence, Settings) and a global chat overlay that unifies data and personas into one assistant experience.

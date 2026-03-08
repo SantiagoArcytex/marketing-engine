@@ -5,6 +5,7 @@ mod analysis;
 mod db;
 mod email_verify;
 mod ollama;
+mod remote_client;
 mod scrape;
 mod sec;
 mod strategy_agent;
@@ -22,6 +23,7 @@ use scrape::{fetch_ads_for_query, fetch_ads_from_url_browser};
 use std::fs;
 use std::path::PathBuf;
 use sec::{fetch_company_tickers, fetch_submissions, resolve_cik, CompanyTickerRow, FilingSummary};
+use remote_client::{remote_chat, CloudProvider};
 use strategy_agent::{build_chat_context, run_strategy_agent, run_strategy_agent_llm};
 use tauri::{Emitter, Manager};
 
@@ -358,8 +360,7 @@ async fn ollama_list_models(ollama_base_url: Option<String>) -> Result<Vec<Strin
         .map_err(|e| e.to_string())?
 }
 
-/// Chat with Ollama using DB context (ads, patterns, emails). Optional system_prompt from frontend (persona/mode).
-/// Optional sec_summary_model: when set, SEC filings in context are summarized via this model (10-K highlights).
+/// Chat: routes to cloud API (when use_cloud) or local Ollama. Cloud uses full context (no RAG limit).
 #[tauri::command]
 async fn ollama_chat(
     state: tauri::State<'_, AppState>,
@@ -371,16 +372,53 @@ async fn ollama_chat(
     ollama_base_url: Option<String>,
     num_ctx: Option<u32>,
     num_predict: Option<u32>,
+    use_cloud: Option<bool>,
+    cloud_provider: Option<String>,
+    cloud_api_key: Option<String>,
+    cloud_model: Option<String>,
+    cloud_base_url: Option<String>,
 ) -> Result<String, String> {
-    let sec_model = sec_summary_model.as_deref();
-    let context = build_chat_context(&state.db_path, Some(&user_message), Some("nomic-embed-text"), sec_model).unwrap_or_default();
-    let base = ollama_base_url.filter(|s| !s.trim().is_empty());
-    let out = tauri::async_runtime::spawn_blocking(move || {
-        ollama::ollama_chat(model, user_message, context, timeout_secs, system_prompt, base.as_deref(), num_ctx, num_predict)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    Ok(out)
+    let use_cloud = use_cloud.unwrap_or(false);
+    if use_cloud {
+        let api_key = cloud_api_key.as_deref().unwrap_or("").to_string();
+        let db_path = state.db_path.clone();
+        let sec_model = sec_summary_model.clone();
+        let context = tauri::async_runtime::spawn_blocking(move || {
+            build_chat_context(&db_path, None, None, sec_model.as_deref(), true).unwrap_or_default()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let user_content = ollama::build_chat_prompt(None, &context, &user_message);
+        let max_tokens = num_predict.or(Some(2048));
+        let base_url = cloud_base_url.as_deref().filter(|s| !s.trim().is_empty());
+        let provider = if base_url.is_none() {
+            cloud_provider
+                .as_deref()
+                .and_then(CloudProvider::from_str)
+        } else {
+            None
+        };
+        remote_chat(
+            &api_key,
+            provider,
+            cloud_model.filter(|s| !s.is_empty()),
+            system_prompt,
+            user_content,
+            max_tokens,
+            base_url,
+        )
+        .await
+    } else {
+        let sec_model = sec_summary_model.as_deref();
+        let context = build_chat_context(&state.db_path, Some(&user_message), Some("nomic-embed-text"), sec_model, false).unwrap_or_default();
+        let base = ollama_base_url.filter(|s| !s.trim().is_empty());
+        let out = tauri::async_runtime::spawn_blocking(move || {
+            ollama::ollama_chat(model, user_message, context, timeout_secs, system_prompt, base.as_deref(), num_ctx, num_predict)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(out)
+    }
 }
 
 /// Pre-warm: load the model into memory so the next chat is fast. Call when user selects a model.
@@ -431,8 +469,7 @@ async fn ollama_vision(
     .map_err(|e| e.to_string())?
 }
 
-/// Chat with Ollama, streaming tokens to the frontend via "ollama-chunk" and "ollama-done" events.
-/// Optional system_prompt from frontend (persona/mode). Optional sec_summary_model for SEC 10-K highlights.
+/// Chat stream: routes to cloud (single response then done) or local Ollama (token stream).
 #[tauri::command]
 async fn ollama_chat_stream(
     window: tauri::Window,
@@ -444,7 +481,46 @@ async fn ollama_chat_stream(
     ollama_base_url: Option<String>,
     num_ctx: Option<u32>,
     num_predict: Option<u32>,
+    use_cloud: Option<bool>,
+    cloud_provider: Option<String>,
+    cloud_api_key: Option<String>,
+    cloud_model: Option<String>,
+    cloud_base_url: Option<String>,
 ) -> Result<(), String> {
+    let use_cloud = use_cloud.unwrap_or(false);
+    if use_cloud {
+        let api_key = cloud_api_key.as_deref().unwrap_or("").to_string();
+        let db_path = state.db_path.clone();
+        let sec_model = sec_summary_model.clone();
+        let context = tauri::async_runtime::spawn_blocking(move || {
+            build_chat_context(&db_path, None, None, sec_model.as_deref(), true).unwrap_or_default()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let user_content = ollama::build_chat_prompt(None, &context, &user_message);
+        let base_url = cloud_base_url.as_deref().filter(|s| !s.trim().is_empty());
+        let provider = if base_url.is_none() {
+            cloud_provider
+                .as_deref()
+                .and_then(CloudProvider::from_str)
+        } else {
+            None
+        };
+        let reply = remote_chat(
+            &api_key,
+            provider,
+            cloud_model.filter(|s| !s.is_empty()),
+            system_prompt.clone(),
+            user_content,
+            num_predict.or(Some(2048)),
+            base_url,
+        )
+        .await?;
+        let _ = window.emit("ollama-chunk", &reply);
+        let _ = window.emit("ollama-done", ());
+        return Ok(());
+    }
+
     use futures_util::StreamExt;
     use ollama::OLLAMA_BASE;
 
@@ -458,7 +534,7 @@ async fn ollama_chat_stream(
     let user_msg = user_message.clone();
     let sec_model = sec_summary_model.clone();
     let context = tauri::async_runtime::spawn_blocking(move || {
-        build_chat_context(&db_path, Some(&user_msg), Some("nomic-embed-text"), sec_model.as_deref()).unwrap_or_default()
+        build_chat_context(&db_path, Some(&user_msg), Some("nomic-embed-text"), sec_model.as_deref(), false).unwrap_or_default()
     })
     .await
     .map_err(|e| e.to_string())?;

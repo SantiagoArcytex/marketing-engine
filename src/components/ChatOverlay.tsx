@@ -262,7 +262,9 @@ export default function ChatOverlay() {
 
   const sendUserMessage = useCallback(
     async (text: string) => {
-      if (!text.trim() || !selectedModel || sending || !activeChatId) return;
+      const settings = getChatSettings();
+      if (!text.trim() || sending || !activeChatId) return;
+      if (!settings.useCloud && !selectedModel) return;
       setSendError(null);
 
       const isFirstMessage = messages.length === 0;
@@ -294,15 +296,19 @@ export default function ChatOverlay() {
       });
 
       try {
-        const settings = getChatSettings();
         await api.ollamaChatStream(
-          selectedModel,
+          selectedModel || "cloud",
           text.trim(),
           getSystemPromptForMode(selectedAgentMode),
           settings.secSummaryModel || undefined,
           settings.ollamaBaseUrl,
           settings.numCtx,
-          settings.numPredict
+          settings.numPredict,
+          settings.useCloud,
+          settings.cloudProvider,
+          settings.cloudApiKey,
+          settings.cloudModel || undefined,
+          settings.cloudBaseUrl || undefined
         );
       } catch (e) {
         setSendError(String(e));
@@ -426,16 +432,27 @@ export default function ChatOverlay() {
     }
   }, [open]);
 
+  const chatSettings = getChatSettings();
+  const useCloud = chatSettings.useCloud;
+  const cloudLabel = useCloud ? "Cloud" : "Local · Beta";
+  const fabAriaLabel = useCloud ? "Open chat (Cloud)" : "Open chat (Local — experimental)";
+
   if (!open) {
     return (
-      <Button
-        size="icon"
-        className="fixed bottom-6 right-6 z-40 size-14 rounded-full shadow-lg"
-        onClick={() => setOpen(true)}
-        aria-label="Open chat"
-      >
-        <MessageSquare className="size-6" />
-      </Button>
+      <div className="fixed bottom-6 right-6 z-40 flex flex-col items-center gap-1.5">
+        <Button
+          size="icon"
+          className="size-14 rounded-full shadow-lg"
+          onClick={() => setOpen(true)}
+          aria-label={fabAriaLabel}
+          title={fabAriaLabel}
+        >
+          <MessageSquare className="size-6" />
+        </Button>
+        <span className="text-[10px] font-medium text-muted-foreground bg-muted/80 backdrop-blur px-2 py-0.5 rounded-full">
+          {cloudLabel}
+        </span>
+      </div>
     );
   }
 
@@ -444,14 +461,20 @@ export default function ChatOverlay() {
 
   return (
     <>
-      <Button
-        size="icon"
-        className="fixed bottom-6 right-6 z-40 size-14 rounded-full shadow-lg"
-        onClick={() => setOpen(true)}
-        aria-label="Open chat"
-      >
-        <MessageSquare className="size-6" />
-      </Button>
+      <div className="fixed bottom-6 right-6 z-40 flex flex-col items-center gap-1.5">
+        <Button
+          size="icon"
+          className="size-14 rounded-full shadow-lg"
+          onClick={() => setOpen(true)}
+          aria-label={fabAriaLabel}
+          title={fabAriaLabel}
+        >
+          <MessageSquare className="size-6" />
+        </Button>
+        <span className="text-[10px] font-medium text-muted-foreground bg-muted/80 backdrop-blur px-2 py-0.5 rounded-full">
+          {cloudLabel}
+        </span>
+      </div>
 
       <div
         role="dialog"
@@ -465,10 +488,18 @@ export default function ChatOverlay() {
         )}
       >
         <header className="shrink-0 border-b border-border px-3 py-2 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <h2 id="chat-overlay-title" className="text-sm font-medium text-foreground truncate">
-              Chat
-            </h2>
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 id="chat-overlay-title" className="text-sm font-medium text-foreground truncate">
+                Chat
+              </h2>
+              <span
+                className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded shrink-0"
+                aria-hidden
+              >
+                {useCloud ? cloudLabel : "Local (experimental)"}
+              </span>
+            </div>
             <span
               id="chat-overlay-desc"
               className="text-xs text-muted-foreground truncate"
@@ -673,7 +704,11 @@ export default function ChatOverlay() {
                   })}
                 </SelectContent>
               </Select>
-              {loadingModels ? (
+              {useCloud ? (
+                <span className="h-8 inline-flex items-center rounded-md border border-input bg-muted/50 px-2 text-xs text-muted-foreground">
+                  {cloudLabel}
+                </span>
+              ) : loadingModels ? (
                 <Skeleton className="h-8 w-32" />
               ) : (
                 <select
@@ -692,9 +727,11 @@ export default function ChatOverlay() {
                   )}
                 </select>
               )}
-              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={loadModels} disabled={loadingModels}>
-                Refresh
-              </Button>
+              {!useCloud && (
+                <Button variant="outline" size="sm" className="h-8 text-xs" onClick={loadModels} disabled={loadingModels}>
+                  Refresh
+                </Button>
+              )}
             </div>
             {modelsError && <p className="px-3 text-xs text-destructive">{modelsError}</p>}
 
@@ -718,13 +755,13 @@ export default function ChatOverlay() {
                     <div
                       key={msg.id}
                       className={cn(
-                        "flex gap-2 items-start max-w-[90%]",
+                        "flex gap-2 items-start max-w-[90%] animate-in fade-in duration-200",
                         msg.role === "user" ? "ml-auto flex-row-reverse" : "mr-auto"
                       )}
                     >
                       <div
                         className={cn(
-                          "flex size-8 shrink-0 items-center justify-center rounded-full",
+                          "flex size-8 shrink-0 items-center justify-center rounded-full mt-0.5",
                           msg.role === "user"
                             ? "bg-primary text-primary-foreground"
                             : "bg-muted text-muted-foreground"
@@ -735,7 +772,7 @@ export default function ChatOverlay() {
                       <div className="flex flex-col gap-2 min-w-0">
                         <div
                           className={cn(
-                            "rounded-xl px-3 py-2.5 text-sm min-h-[44px]",
+                            "rounded-xl px-3 py-2.5 text-sm",
                             msg.role === "user"
                               ? "bg-primary text-primary-foreground"
                               : "border border-border bg-muted/50 text-foreground"
@@ -785,7 +822,7 @@ export default function ChatOverlay() {
                                 size="sm"
                                 className="text-xs h-8"
                                 onClick={() => sendUserMessage(opt)}
-                                disabled={sending || !selectedModel || !activeChatId}
+                                disabled={sending || !activeChatId || (!useCloud && !selectedModel)}
                               >
                                 {opt}
                               </Button>
@@ -798,11 +835,11 @@ export default function ChatOverlay() {
                 })}
                 {sending && activeChatId && (
                   <div className="flex gap-2 items-start mr-auto max-w-[90%]">
-                    <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                    <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground mt-0.5">
                       <Bot className="size-4" />
                     </div>
-                    <div className="rounded-xl border border-border bg-muted/50 px-3 py-2.5 min-h-[44px] flex items-center gap-1.5 text-muted-foreground text-sm">
-                      <span className="flex gap-1 items-center" aria-hidden>
+                    <div className="rounded-xl border border-border bg-muted/50 px-3 py-2.5 flex items-center gap-1.5 text-muted-foreground text-sm min-h-10">
+                      <span className="flex gap-1 items-center shrink-0" aria-hidden>
                         <span className="size-2 rounded-full bg-muted-foreground/80 animate-bounce [animation-delay:0ms]" />
                         <span className="size-2 rounded-full bg-muted-foreground/80 animate-bounce [animation-delay:150ms]" />
                         <span className="size-2 rounded-full bg-muted-foreground/80 animate-bounce [animation-delay:300ms]" />
@@ -815,7 +852,7 @@ export default function ChatOverlay() {
 
               {sendError && <p className="px-4 text-sm text-destructive">{sendError}</p>}
 
-              <div className="shrink-0 flex gap-2 border-t border-border p-4">
+              <div className="shrink-0 flex gap-2 items-center border-t border-border p-4">
                 <input
                   ref={imageInputRef}
                   type="file"
@@ -837,7 +874,7 @@ export default function ChatOverlay() {
                   type="button"
                   variant="outline"
                   size="icon"
-                  className="min-h-[44px] min-w-[44px] shrink-0"
+                  className="h-11 w-11 shrink-0"
                   onClick={() => imageInputRef.current?.click()}
                   disabled={sending || !selectedModel || !activeChatId}
                   title="Attach image (vision model required, e.g. llava)"
@@ -845,22 +882,21 @@ export default function ChatOverlay() {
                   <ImagePlus className="size-5" />
                 </Button>
                 <Input
-                  className="min-h-[44px] flex-1"
+                  className="h-11 flex-1"
                   placeholder={attachedImageBase64 ? "Add a prompt or send to analyze image…" : "Ask anything…"}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-                  disabled={sending || !selectedModel || models.length === 0 || !activeChatId}
+                  disabled={sending || !activeChatId || (!useCloud && (!selectedModel || models.length === 0))}
                 />
                 <Button
-                  className="min-h-[44px]"
+                  className="h-11 shrink-0"
                   onClick={handleSend}
                   disabled={
                     sending ||
                     (!input.trim() && !attachedImageBase64) ||
-                    !selectedModel ||
-                    models.length === 0 ||
-                    !activeChatId
+                    !activeChatId ||
+                    (!useCloud && (!selectedModel || models.length === 0))
                   }
                 >
                   {sending ? "…" : "Send"}
