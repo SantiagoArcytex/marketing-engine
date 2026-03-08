@@ -144,3 +144,8 @@
     @apply font-sans;
   }
 }
+
+/* Prevent wait cursor during chat/async so loading is only shown in-chat */
+body.chat-loading {
+  cursor: default !important;
+}

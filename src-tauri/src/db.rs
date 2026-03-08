@@ -12,6 +12,20 @@ fn migrate_ads_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+/// Add verified_emails test columns if missing (idempotent). 0 = fail, 1 = pass, NULL = unknown.
+fn migrate_verified_emails_tests(conn: &Connection) -> Result<(), rusqlite::Error> {
+    for col in &["syntax_ok INTEGER", "mx_ok INTEGER", "disposable_ok INTEGER"] {
+        let sql = format!("ALTER TABLE verified_emails ADD COLUMN {}", col);
+        if let Err(e) = conn.execute(&sql, []) {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Initialize or upgrade database schema.
 pub fn init_db(db_path: &Path) -> Result<(), rusqlite::Error> {
     if let Some(parent) = db_path.parent() {
@@ -39,6 +53,7 @@ pub fn init_db(db_path: &Path) -> Result<(), rusqlite::Error> {
         ",
     )?;
     migrate_ads_schema(&conn)?;
+    migrate_verified_emails_tests(&conn)?;
     Ok(())
 }
 
@@ -53,6 +68,12 @@ pub struct AdRow {
     pub audience: Option<String>,
     pub source: Option<String>,
     pub created_at: Option<String>,
+}
+
+/// Delete all ads. Returns number of rows deleted.
+pub fn clear_all_ads(conn: &Connection) -> Result<usize, rusqlite::Error> {
+    let n = conn.execute("DELETE FROM ads", [])?;
+    Ok(n)
 }
 
 /// Delete ads whose source exactly matches the given string (e.g. query). Used for replace mode.
@@ -188,16 +209,22 @@ pub struct PatternStats {
     pub offers: Vec<(String, i64)>,
 }
 
-/// Insert or replace verified email result.
+/// Insert or replace verified email result. Test flags: 1 = pass, 0 = fail (optional for backward compat).
 pub fn upsert_verified_email(
     conn: &Connection,
     email: &str,
     status: &str,
     quality: &str,
+    syntax_ok: Option<bool>,
+    mx_ok: Option<bool>,
+    disposable_ok: Option<bool>,
 ) -> Result<(), rusqlite::Error> {
+    let s = syntax_ok.map(|b| if b { 1i32 } else { 0 });
+    let m = mx_ok.map(|b| if b { 1i32 } else { 0 });
+    let d = disposable_ok.map(|b| if b { 1i32 } else { 0 });
     conn.execute(
-        "INSERT OR REPLACE INTO verified_emails (email, status, quality, verified_at) VALUES (?1, ?2, ?3, datetime('now'))",
-        rusqlite::params![email, status, quality],
+        "INSERT OR REPLACE INTO verified_emails (email, status, quality, verified_at, syntax_ok, mx_ok, disposable_ok) VALUES (?1, ?2, ?3, datetime('now'), ?4, ?5, ?6)",
+        rusqlite::params![email, status, quality, s, m, d],
     )?;
     Ok(())
 }
@@ -209,47 +236,100 @@ pub struct VerifiedEmailRow {
     pub status: String,
     pub quality: String,
     pub verified_at: Option<String>,
+    /// 1 = pass, 0 = fail, NULL = unknown (old row)
+    pub syntax_ok: Option<i32>,
+    pub mx_ok: Option<i32>,
+    pub disposable_ok: Option<i32>,
+}
+
+fn row_to_verified_email(row: &rusqlite::Row) -> Result<VerifiedEmailRow, rusqlite::Error> {
+    Ok(VerifiedEmailRow {
+        email: row.get(0)?,
+        status: row.get(1)?,
+        quality: row.get(2)?,
+        verified_at: row.get(3)?,
+        syntax_ok: row.get::<_, Option<i32>>(4)?,
+        mx_ok: row.get::<_, Option<i32>>(5)?,
+        disposable_ok: row.get::<_, Option<i32>>(6)?,
+    })
 }
 
 pub fn list_verified_emails(
     conn: &Connection,
     status_filter: Option<&str>,
+    search: Option<&str>,
     limit: i32,
+    offset: i32,
 ) -> Result<Vec<VerifiedEmailRow>, rusqlite::Error> {
     let limit = limit.clamp(1, 50_000);
-    let mut out = Vec::new();
-    if let Some(s) = status_filter {
-        let mut stmt = conn.prepare(
-            "SELECT email, status, quality, verified_at FROM verified_emails WHERE status = ?1 ORDER BY verified_at DESC LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![s, limit], |row| {
-            Ok(VerifiedEmailRow {
-                email: row.get(0)?,
-                status: row.get(1)?,
-                quality: row.get(2)?,
-                verified_at: row.get(3)?,
-            })
-        })?;
-        for row in rows {
-            out.push(row?);
+    let offset = offset.max(0);
+    let sel = "SELECT email, status, quality, verified_at, syntax_ok, mx_ok, disposable_ok FROM verified_emails";
+    let order_limit = format!(" ORDER BY verified_at DESC LIMIT {} OFFSET {}", limit, offset);
+    let rows = match (status_filter, search) {
+        (Some(s), Some(q)) => {
+            let sql = format!("{} WHERE status = ?1 AND email LIKE ?2 {}", sel, order_limit);
+            let like = format!("%{}%", q);
+            conn.prepare(&sql)?
+                .query_map(rusqlite::params![s, like], |row| row_to_verified_email(row))?
+                .collect::<Result<Vec<_>, _>>()?
         }
-    } else {
-        let mut stmt = conn.prepare(
-            "SELECT email, status, quality, verified_at FROM verified_emails ORDER BY verified_at DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![limit], |row| {
-            Ok(VerifiedEmailRow {
-                email: row.get(0)?,
-                status: row.get(1)?,
-                quality: row.get(2)?,
-                verified_at: row.get(3)?,
-            })
-        })?;
-        for row in rows {
-            out.push(row?);
+        (Some(s), None) => {
+            let sql = format!("{} WHERE status = ?1 {}", sel, order_limit);
+            conn.prepare(&sql)?
+                .query_map(rusqlite::params![s], |row| row_to_verified_email(row))?
+                .collect::<Result<Vec<_>, _>>()?
         }
-    }
-    Ok(out)
+        (None, Some(q)) => {
+            let sql = format!("{} WHERE email LIKE ?1 {}", sel, order_limit);
+            let like = format!("%{}%", q);
+            conn.prepare(&sql)?
+                .query_map(rusqlite::params![like], |row| row_to_verified_email(row))?
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        (None, None) => {
+            let sql = format!("{}{}", sel, order_limit);
+            conn.prepare(&sql)?
+                .query_map([], |row| row_to_verified_email(row))?
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    };
+    Ok(rows)
+}
+
+/// Count verified emails with same filters as list_verified_emails.
+pub fn count_verified_emails(
+    conn: &Connection,
+    status_filter: Option<&str>,
+    search: Option<&str>,
+) -> Result<i64, rusqlite::Error> {
+    let count_sql = "SELECT COUNT(*) FROM verified_emails";
+    let count: i64 = match (status_filter, search) {
+        (Some(s), Some(q)) => {
+            let like = format!("%{}%", q);
+            conn.query_row(
+                &format!("{} WHERE status = ?1 AND email LIKE ?2", count_sql),
+                rusqlite::params![s, like],
+                |row| row.get(0),
+            )?
+        }
+        (Some(s), None) => {
+            conn.query_row(
+                &format!("{} WHERE status = ?1", count_sql),
+                rusqlite::params![s],
+                |row| row.get(0),
+            )?
+        }
+        (None, Some(q)) => {
+            let like = format!("%{}%", q);
+            conn.query_row(
+                &format!("{} WHERE email LIKE ?1", count_sql),
+                rusqlite::params![like],
+                |row| row.get(0),
+            )?
+        }
+        (None, None) => conn.query_row(count_sql, [], |row| row.get(0))?,
+    };
+    Ok(count)
 }
 
 pub fn get_pattern_stats(conn: &Connection) -> Result<PatternStats, rusqlite::Error> {

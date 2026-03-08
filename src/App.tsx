@@ -1,172 +1,100 @@
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import {
-  Box,
-  Drawer,
-  List,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
-  Typography,
-  TextField,
-  Button,
-  Paper,
-  CssBaseline,
-  AppBar,
-  Toolbar,
-  ThemeProvider,
-  createTheme,
-} from "@mui/material";
-import ExploreIcon from "@mui/icons-material/Explore";
-import AccountTreeIcon from "@mui/icons-material/AccountTree";
-import EmailIcon from "@mui/icons-material/Email";
-import PsychologyIcon from "@mui/icons-material/Psychology";
-import CreateIcon from "@mui/icons-material/Create";
-import RadarIcon from "@mui/icons-material/Radar";
+import { Compass, Mail, Loader2, Check, Settings } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { TaskStatusProvider, useTaskStatus } from "./contexts/TaskStatusContext";
 import AdExplorer from "./components/AdExplorer";
+import ChatOverlay from "./components/ChatOverlay";
 import EmailIntelligence from "./components/EmailIntelligence";
-import StrategyOrchestrator from "./components/StrategyOrchestrator";
-import FunnelAnalyzer from "./components/FunnelAnalyzer";
-import CopywritingGenerator from "./components/CopywritingGenerator";
-import CompetitorRadar from "./components/CompetitorRadar";
+import SettingsScreen from "./components/SettingsScreen";
+import { Toaster } from "sonner";
 import "./App.css";
 
-const darkTheme = createTheme({ palette: { mode: "dark" } });
-const DRAWER_WIDTH = 260;
+const SIDEBAR_WIDTH = 260;
 
 const MODULES = [
-  { id: "ad-explorer", label: "Ad Explorer", icon: <ExploreIcon /> },
-  { id: "funnel-analyzer", label: "Funnel Analyzer", icon: <AccountTreeIcon /> },
-  { id: "email-intelligence", label: "Email Intelligence", icon: <EmailIcon /> },
-  { id: "strategy-orchestrator", label: "Strategy Orchestrator", icon: <PsychologyIcon /> },
-  { id: "copywriting-generator", label: "Copywriting Generator", icon: <CreateIcon /> },
-  { id: "competitor-radar", label: "Competitor Radar", icon: <RadarIcon /> },
+  { id: "ad-explorer", label: "Ad Explorer", icon: Compass },
+  { id: "email-intelligence", label: "Email Intelligence", icon: Mail },
+  { id: "settings", label: "Settings", icon: Settings },
 ] as const;
 
-function App() {
-  const [activeModule, setActiveModule] = useState<string>(MODULES[0].id);
-  const [greetName, setGreetName] = useState("");
-  const [greetMsg, setGreetMsg] = useState("");
+const TASK_MODULE_IDS = new Set<string>([]);
 
-  async function greet() {
-    try {
-      const msg = await invoke<string>("greet", { name: greetName || "World" });
-      setGreetMsg(msg);
-    } catch (e) {
-      setGreetMsg(`Error: ${String(e)}`);
-    }
-  }
+function AppContent() {
+  const [activeModule, setActiveModule] = useState<string>(MODULES[0].id);
+  const { taskStatus } = useTaskStatus();
 
   return (
-    <ThemeProvider theme={darkTheme}>
-    <Box sx={{ display: "flex", minHeight: "100vh", flexDirection: "column" }}>
-      <CssBaseline />
-      <AppBar position="static" elevation={0} sx={{ borderBottom: 1, borderColor: "divider" }}>
-        <Toolbar>
-          <Typography variant="h6" component="span">
-            Marketing Intelligence Engine
-          </Typography>
-        </Toolbar>
-      </AppBar>
-      <Box sx={{ display: "flex", flex: 1, overflow: "hidden" }}>
-      <Drawer
-        variant="permanent"
-        sx={{
-          width: DRAWER_WIDTH,
-          flexShrink: 0,
-          "& .MuiDrawer-paper": {
-            width: DRAWER_WIDTH,
-            boxSizing: "border-box",
-            borderRight: 1,
-            borderColor: "divider",
-            top: "auto",
-          },
-        }}
-      >
-        <Box sx={{ overflow: "auto", py: 2 }}>
-          <Typography variant="subtitle2" color="text.secondary" px={2} pb={1}>
-            Modules
-          </Typography>
-          <List>
-            {MODULES.map((m) => (
-              <ListItemButton
-                key={m.id}
-                selected={activeModule === m.id}
-                onClick={() => setActiveModule(m.id)}
-              >
-                <ListItemIcon>{m.icon}</ListItemIcon>
-                <ListItemText primary={m.label} />
-              </ListItemButton>
-            ))}
-          </List>
-        </Box>
-      </Drawer>
-      <Box
-        component="main"
-        sx={{
-          flexGrow: 1,
-          p: 3,
-          ml: 0,
-          width: `calc(100% - ${DRAWER_WIDTH}px)`,
-          overflow: "auto",
-        }}
-      >
-        {activeModule === "ad-explorer" ? (
-          <AdExplorer />
-        ) : activeModule === "email-intelligence" ? (
-          <EmailIntelligence />
-        ) : activeModule === "strategy-orchestrator" ? (
-          <StrategyOrchestrator />
-        ) : activeModule === "funnel-analyzer" ? (
-          <FunnelAnalyzer />
-        ) : activeModule === "copywriting-generator" ? (
-          <CopywritingGenerator />
-        ) : activeModule === "competitor-radar" ? (
-          <CompetitorRadar />
-        ) : (
-          <>
-            <Typography variant="h4" gutterBottom>
-              Marketing Intelligence Engine
-            </Typography>
-            <Typography variant="body1" color="text.secondary" paragraph>
-              Local intelligence platform for marketing research. Select a module from the sidebar.
-            </Typography>
-            <Paper sx={{ p: 3, mt: 2, maxWidth: 480 }}>
-              <Typography variant="h6" gutterBottom>
-                Backend test (greet)
-              </Typography>
-              <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
-                <TextField
-                  size="small"
-                  label="Name"
-                  value={greetName}
-                  onChange={(e) => setGreetName(e.target.value)}
-                  placeholder="Enter a name..."
-                />
-                <Button variant="contained" onClick={greet}>
-                  Greet
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-6">
+        <h1 className="text-lg font-semibold tracking-tight">
+          Marketing Intelligence Engine
+        </h1>
+      </header>
+      <div className="flex flex-1 overflow-hidden">
+        <aside
+          className="flex w-[260px] shrink-0 flex-col border-r border-border bg-card"
+          style={{ width: SIDEBAR_WIDTH }}
+        >
+          <nav className="flex flex-1 flex-col gap-0.5 overflow-auto p-3">
+            <p className="mb-1 px-2 text-xs font-medium text-muted-foreground">
+              Modules
+            </p>
+            {MODULES.map((m) => {
+              const Icon = m.icon;
+              const status = TASK_MODULE_IDS.has(m.id) ? taskStatus[m.id] : undefined;
+              return (
+                <Button
+                  key={m.id}
+                  variant={activeModule === m.id ? "secondary" : "ghost"}
+                  className={cn(
+                    "h-11 min-h-[44px] justify-start gap-3 px-3",
+                    activeModule === m.id && "bg-sidebar-accent text-sidebar-accent-foreground",
+                    status === "success" && "border-l-2 border-l-emerald-500"
+                  )}
+                  onClick={() => setActiveModule(m.id)}
+                >
+                  <Icon className="size-5 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate text-left">{m.label}</span>
+                  {status === "running" && (
+                    <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />
+                  )}
+                  {status === "success" && (
+                    <Check className="size-4 shrink-0 text-emerald-500" aria-hidden />
+                  )}
                 </Button>
-              </Box>
-              {greetMsg && (
-                <Typography variant="body2" sx={{ mt: 2 }}>
-                  {greetMsg}
-                </Typography>
-              )}
-            </Paper>
-            <Box sx={{ mt: 3 }}>
-              <Typography variant="subtitle1" color="text.secondary">
-                Active module: {MODULES.find((m) => m.id === activeModule)?.label ?? activeModule}
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                (Placeholder — full UI per module in later phases)
-              </Typography>
-            </Box>
-          </>
-        )}
-      </Box>
-      </Box>
-    </Box>
-    </ThemeProvider>
+              );
+            })}
+          </nav>
+        </aside>
+        <main
+          className="flex-1 overflow-auto p-6"
+          style={{ width: `calc(100% - ${SIDEBAR_WIDTH}px)` }}
+        >
+          {activeModule === "ad-explorer" && <AdExplorer />}
+          {activeModule === "email-intelligence" && <EmailIntelligence />}
+          {activeModule === "settings" && <SettingsScreen />}
+          {!MODULES.some((m) => m.id === activeModule) && (
+            <div className="space-y-4">
+              <h2 className="text-2xl font-semibold">Marketing Intelligence Engine</h2>
+              <p className="text-muted-foreground">
+                Local intelligence platform for marketing research. Select a module from the sidebar.
+              </p>
+            </div>
+          )}
+        </main>
+      </div>
+      <ChatOverlay />
+      <Toaster richColors position="bottom-right" />
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <TaskStatusProvider>
+      <AppContent />
+    </TaskStatusProvider>
   );
 }
 

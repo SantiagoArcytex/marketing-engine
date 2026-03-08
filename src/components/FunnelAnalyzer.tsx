@@ -1,20 +1,24 @@
-import { Box, Typography, Paper } from "@mui/material";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
 export default function FunnelAnalyzer() {
   return (
-    <Box>
-      <Typography variant="h6" gutterBottom>
-        Funnel Analyzer
-      </Typography>
-      <Typography variant="body2" color="text.secondary" paragraph>
+    <div className="space-y-6">
+      <h2 className="text-xl font-semibold tracking-tight">Funnel Analyzer</h2>
+      <p className="text-sm text-muted-foreground">
         Reconstruct competitor funnels: ad → landing page → offer → CTA.
-      </Typography>
-      <Paper sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
-        <Typography variant="body2">
-          Funnel reconstruction from scraped data will be available in a future update.
-          Scrape ads in Ad Explorer to populate data; funnel steps (landing page, offer, CTA) can be linked when those fields are added.
-        </Typography>
-      </Paper>
-    </Box>
+      </p>
+      <Card>
+        <CardHeader>
+          <CardTitle>Coming soon</CardTitle>
+          <CardDescription>Funnel reconstruction from scraped data.</CardDescription>
+        </CardHeader>
+        <CardContent className="text-center text-muted-foreground">
+          <p className="text-sm">
+            Funnel reconstruction from scraped data will be available in a future update.
+            Scrape ads in Ad Explorer to populate data; funnel steps (landing page, offer, CTA) can be linked when those fields are added.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
   );
 }

@@ -3,6 +3,8 @@
 
 use rusqlite::Connection;
 use std::path::Path;
+use crate::ollama;
+use crate::sec;
 
 /// Tool: query ads (recent N).
 fn tool_query_ads(conn: &Connection, limit: i32) -> Result<Vec<(String, String, String)>, String> {
@@ -62,6 +64,40 @@ fn tool_verified_emails_summary(conn: &Connection) -> Result<Vec<(String, i64)>,
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// Build a context string from DB for the AI chat (ads, patterns, emails summary).
+pub fn build_chat_context(db_path: &Path) -> Result<String, String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let ads = tool_query_ads(&conn, 20)?;
+    let (hooks, emotions, offers) = tool_pattern_stats(&conn)?;
+    let email_summary = tool_verified_emails_summary(&conn).unwrap_or_default();
+
+    let mut ctx = String::new();
+    ctx.push_str("## Ads (recent, content | hook | offer)\n");
+    for (content, hook, offer) in ads.iter().take(15) {
+        let content_preview = content.chars().take(100).collect::<String>();
+        ctx.push_str(&format!("- {} | Hook: {} | Offer: {}\n", content_preview, hook, offer));
+    }
+    ctx.push_str("\n## Pattern stats (top)\n");
+    ctx.push_str("Hooks: ");
+    ctx.push_str(&hooks.iter().take(5).map(|(h, c)| format!("{} ({})", h, c)).collect::<Vec<_>>().join(", "));
+    ctx.push_str("\nEmotions: ");
+    ctx.push_str(&emotions.iter().take(5).map(|(e, c)| format!("{} ({})", e, c)).collect::<Vec<_>>().join(", "));
+    ctx.push_str("\nOffers: ");
+    ctx.push_str(&offers.iter().take(5).map(|(o, c)| format!("{} ({})", o, c)).collect::<Vec<_>>().join(", "));
+    ctx.push_str("\n\n## Verified emails summary\n");
+    if email_summary.is_empty() {
+        ctx.push_str("(none)\n");
+    } else {
+        for (s, c) in &email_summary {
+            ctx.push_str(&format!("{}: {}\n", s, c));
+        }
+    }
+    // SEC EDGAR: recent filings for reference companies (no API key required).
+    let sec_tickers: Vec<String> = vec!["AAPL".into(), "META".into()];
+    ctx.push_str(&sec::build_sec_context(&sec_tickers));
+    Ok(ctx)
+}
+
 /// Run the strategy agent: gather data and produce a markdown report.
 pub fn run_strategy_agent(db_path: &Path, query: &str) -> Result<String, String> {
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
@@ -112,4 +148,19 @@ pub fn run_strategy_agent(db_path: &Path, query: &str) -> Result<String, String>
     }
 
     Ok(report)
+}
+
+/// Run the strategy agent with an LLM: build context and ask Ollama for a markdown report.
+pub fn run_strategy_agent_llm(
+    db_path: &Path,
+    query: &str,
+    model: &str,
+    timeout_secs: Option<u64>,
+) -> Result<String, String> {
+    let context = build_chat_context(db_path).unwrap_or_default();
+    let prompt = format!(
+        "Given the following marketing data, produce a concise strategy report for this query. Output markdown with sections: **Optimal Strategy**, **Key Takeaways**, and optional **Sample ad copy**. Be actionable and specific.\n\nQuery: {}",
+        query.trim()
+    );
+    ollama::ollama_chat(model.to_string(), prompt, context, timeout_secs, None)
 }

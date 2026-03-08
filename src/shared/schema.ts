@@ -40,6 +40,13 @@ export const VerifyResultSchema = z.object({
   email: z.string(),
   status: z.string(),
   quality: z.string(),
+  tests: z
+    .object({
+      syntax: z.boolean(),
+      disposable: z.boolean(),
+      mx: z.boolean(),
+    })
+    .optional(),
 });
 export type VerifyResult = z.infer<typeof VerifyResultSchema>;
 
@@ -48,11 +55,22 @@ export const VerifiedEmailRowSchema = z.object({
   status: z.string(),
   quality: z.string(),
   verified_at: z.string().nullable(),
+  syntax_ok: z.number().nullable().optional(),
+  mx_ok: z.number().nullable().optional(),
+  disposable_ok: z.number().nullable().optional(),
 });
 export type VerifiedEmailRow = z.infer<typeof VerifiedEmailRowSchema>;
 
 export const GetVerifiedEmailsInputSchema = z.object({
-  statusFilter: z.string().optional(),
   limit: z.number().optional(),
+  offset: z.number().optional(),
+  statusFilter: z.string().optional(),
+  search: z.string().optional(),
 });
 export type GetVerifiedEmailsInput = z.infer<typeof GetVerifiedEmailsInputSchema>;
+
+export const GetVerifiedEmailsResponseSchema = z.object({
+  items: z.array(VerifiedEmailRowSchema),
+  total: z.number(),
+});
+export type GetVerifiedEmailsResponse = z.infer<typeof GetVerifiedEmailsResponseSchema>;

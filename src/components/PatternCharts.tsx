@@ -1,101 +1,106 @@
-import { useEffect, useRef } from "react";
-import * as d3 from "d3";
-import { Box, Typography, Paper } from "@mui/material";
+import ReactECharts from "echarts-for-react";
+import type { EChartsOption } from "echarts";
+import type { PatternStats } from "@/shared/schema";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-export interface PatternStats {
-  hooks: [string, number][];
-  emotions: [string, number][];
-  offers: [string, number][];
-}
+export type { PatternStats };
 
-function drawBarChart(
-  container: SVGSVGElement | null,
+const darkBarColors = ["#4889c9", "#5da85d", "#e07c3c"];
+
+// Explicit light colors for dark theme (ECharts canvas does not resolve CSS variables)
+const LIGHT = {
+  text: "#e2e8f0",
+  textMuted: "#94a3b8",
+  textBright: "#f1f5f9",
+  label: "#cbd5e1",
+  border: "#334155",
+  tooltipBg: "#1e293b",
+};
+
+function barOption(
   data: [string, number][],
   title: string,
-  color: string
-) {
-  if (!container || data.length === 0) return;
-  d3.select(container).selectAll("*").remove();
-
-  const margin = { top: 20, right: 20, bottom: 30, left: 120 };
-  const width = Math.max(280, container.clientWidth) - margin.left - margin.right;
-  const height = Math.max(120, data.length * 22);
-
-  const svg = d3
-    .select(container)
-    .attr("width", width + margin.left + margin.right)
-    .attr("height", height + margin.top + margin.bottom);
-
-  const g = svg
-    .append("g")
-    .attr("transform", `translate(${margin.left},${margin.top})`);
-
-  const x = d3.scaleLinear().domain([0, d3.max(data, (d) => d[1]) ?? 1]).range([0, width]);
-  const y = d3
-    .scaleBand()
-    .domain(data.map((d) => d[0]))
-    .range([0, height])
-    .padding(0.2);
-
-  g.append("text")
-    .attr("x", 0)
-    .attr("y", -8)
-    .attr("font-size", "12px")
-    .attr("fill", "currentColor")
-    .text(title);
-
-  g.selectAll(".bar")
-    .data(data)
-    .join("rect")
-    .attr("class", "bar")
-    .attr("x", 0)
-    .attr("y", (d) => y(d[0]) ?? 0)
-    .attr("height", y.bandwidth())
-    .attr("width", (d) => x(d[1]))
-    .attr("fill", color);
-
-  g.selectAll(".label")
-    .data(data)
-    .join("text")
-    .attr("class", "label")
-    .attr("x", (d) => x(d[1]) + 4)
-    .attr("y", (d) => (y(d[0]) ?? 0) + y.bandwidth() / 2)
-    .attr("dy", "0.35em")
-    .attr("font-size", "11px")
-    .attr("fill", "currentColor")
-    .text((d) => d[1]);
+  colorIndex: number
+): EChartsOption {
+  const color = darkBarColors[colorIndex % darkBarColors.length];
+  return {
+    backgroundColor: "transparent",
+    textStyle: { color: LIGHT.textMuted, fontSize: 12 },
+    title: {
+      text: title,
+      left: 0,
+      top: 0,
+      textStyle: { fontSize: 12, color: LIGHT.textBright, fontWeight: 500 },
+    },
+    grid: {
+      left: 120,
+      right: 24,
+      top: 28,
+      bottom: 24,
+      containLabel: false,
+    },
+    xAxis: {
+      type: "value",
+      axisLine: { show: true, lineStyle: { color: LIGHT.border } },
+      splitLine: { lineStyle: { color: LIGHT.border, type: "dashed" } },
+      axisLabel: { color: LIGHT.text, fontSize: 12 },
+    },
+    yAxis: {
+      type: "category",
+      data: data.map((d) => d[0]),
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: LIGHT.text, fontSize: 12 },
+      inverse: true,
+    },
+    series: [
+      {
+        type: "bar",
+        data: data.map((d) => d[1]),
+        itemStyle: { color },
+        barMaxWidth: 24,
+        label: {
+          show: true,
+          position: "right",
+          color: LIGHT.label,
+          fontSize: 11,
+        },
+      },
+    ],
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: LIGHT.tooltipBg,
+      borderColor: LIGHT.border,
+      textStyle: { color: LIGHT.textBright, fontSize: 12 },
+    },
+  };
 }
 
 export default function PatternCharts({ stats }: { stats: PatternStats | null }) {
-  const hooksRef = useRef<SVGSVGElement>(null);
-  const emotionsRef = useRef<SVGSVGElement>(null);
-  const offersRef = useRef<SVGSVGElement>(null);
-
-  useEffect(() => {
-    if (!stats) return;
-    drawBarChart(hooksRef.current, stats.hooks, "Top hooks", "#1976d2");
-    drawBarChart(emotionsRef.current, stats.emotions, "Emotions", "#2e7d32");
-    drawBarChart(offersRef.current, stats.offers, "Offers", "#ed6c02");
-  }, [stats]);
-
   if (!stats) return null;
 
+  const hooksOption = barOption(stats.hooks, "Top hooks", 0);
+  const emotionsOption = barOption(stats.emotions, "Emotions", 1);
+  const offersOption = barOption(stats.offers, "Offers", 2);
+
   return (
-    <Paper sx={{ p: 2, mt: 2 }}>
-      <Typography variant="subtitle1" gutterBottom>
-        Pattern distribution
-      </Typography>
-      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-        <Box>
-          <svg ref={hooksRef} />
-        </Box>
-        <Box>
-          <svg ref={emotionsRef} />
-        </Box>
-        <Box>
-          <svg ref={offersRef} />
-        </Box>
-      </Box>
-    </Paper>
+    <Card>
+      <CardHeader>
+        <CardTitle>Pattern distribution</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap gap-6">
+          <div className="min-h-[200px] w-[320px]">
+            <ReactECharts option={hooksOption} style={{ height: Math.max(120, stats.hooks.length * 28) }} />
+          </div>
+          <div className="min-h-[200px] w-[320px]">
+            <ReactECharts option={emotionsOption} style={{ height: Math.max(120, stats.emotions.length * 28) }} />
+          </div>
+          <div className="min-h-[200px] w-[320px]">
+            <ReactECharts option={offersOption} style={{ height: Math.max(120, stats.offers.length * 28) }} />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

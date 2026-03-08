@@ -16,11 +16,20 @@ pub enum VerifyStatus {
     Unknown,
 }
 
+/// Per-check results: which verification tests passed (syntax, not disposable, MX).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VerifyTests {
+    pub syntax: bool,
+    pub disposable: bool, // true = not disposable (pass)
+    pub mx: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct VerifyResult {
     pub email: String,
     pub status: VerifyStatus,
     pub quality: String, // "good" | "bad" | "risky"
+    pub tests: VerifyTests,
 }
 
 /// Basic RFC-style email syntax check (simplified).
@@ -69,21 +78,26 @@ pub async fn verify_email(email: &str) -> VerifyResult {
             email: email.clone(),
             status: VerifyStatus::Invalid,
             quality: "bad".to_string(),
+            tests: VerifyTests { syntax: false, disposable: false, mx: false },
         };
     }
-    if !check_syntax(&email) {
+    let syntax_ok = check_syntax(&email);
+    if !syntax_ok {
         return VerifyResult {
             email: email.clone(),
             status: VerifyStatus::Invalid,
             quality: "bad".to_string(),
+            tests: VerifyTests { syntax: false, disposable: false, mx: false },
         };
     }
     let domain = email.split('@').nth(1).unwrap_or("");
-    if is_disposable_domain(domain) {
+    let disposable_ok = !is_disposable_domain(domain);
+    if !disposable_ok {
         return VerifyResult {
             email: email.clone(),
             status: VerifyStatus::Disposable,
             quality: "bad".to_string(),
+            tests: VerifyTests { syntax: true, disposable: false, mx: false },
         };
     }
     let has_mx = check_mx(domain).await;
@@ -92,13 +106,14 @@ pub async fn verify_email(email: &str) -> VerifyResult {
             email: email.clone(),
             status: VerifyStatus::Invalid,
             quality: "bad".to_string(),
+            tests: VerifyTests { syntax: true, disposable: true, mx: false },
         };
     }
-    // Could add SMTP RCPT TO here; for now we report Ok if MX exists.
     VerifyResult {
         email: email.clone(),
         status: VerifyStatus::Ok,
         quality: "good".to_string(),
+        tests: VerifyTests { syntax: true, disposable: true, mx: true },
     }
 }
 
