@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../api/client";
-import { getAITimeouts } from "../lib/settings";
+import { getAITimeouts, getChatSettings } from "../lib/settings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -23,7 +23,7 @@ export default function AIChat() {
     setLoadingModels(true);
     setModelsError(null);
     try {
-      const list = await api.ollamaListModels();
+      const list = await api.ollamaListModels(getChatSettings().ollamaBaseUrl);
       setModels(list);
       if (list.length > 0 && !selectedModel) setSelectedModel(list[0]);
     } catch (e) {
@@ -50,7 +50,17 @@ export default function AIChat() {
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setSending(true);
     try {
-      const reply = await api.ollamaChat(selectedModel, text, getAITimeouts().chat);
+      const settings = getChatSettings();
+      const reply = await api.ollamaChat(
+        selectedModel,
+        text,
+        getAITimeouts().chat,
+        undefined,
+        settings.secSummaryModel || undefined,
+        settings.ollamaBaseUrl,
+        settings.numCtx,
+        settings.numPredict
+      );
       setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
     } catch (e) {
       setSendError(String(e));

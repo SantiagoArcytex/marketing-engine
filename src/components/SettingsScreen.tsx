@@ -11,13 +11,14 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { getAITimeouts, setAITimeouts, AI_TIMEOUT_LIMITS } from "@/lib/settings";
+import { getAITimeouts, setAITimeouts, AI_TIMEOUT_LIMITS, getScrapeSettings, setScrapeSettings, getChatSettings, setChatSettings, type ScrapeSettings, type ChatSettings } from "@/lib/settings";
 import {
   getCustomModes,
   addCustomMode,
   removeCustomMode,
   type CustomAgentMode,
 } from "@/lib/agentModes";
+import { PERSONA_LIBRARY } from "@/lib/personaLibrary";
 import { api } from "@/api/client";
 import { toast } from "sonner";
 
@@ -28,10 +29,22 @@ export default function SettingsScreen() {
   const [newLabel, setNewLabel] = useState("");
   const [newPrompt, setNewPrompt] = useState("");
   const [exportingId, setExportingId] = useState<string | null>(null);
+  const [scrapeSettings, setScrapeSettingsState] = useState<ScrapeSettings>(() => getScrapeSettings());
+  const [chatSettings, setChatSettingsState] = useState<ChatSettings>(() => getChatSettings());
 
   useEffect(() => {
     setTimeouts(getAITimeouts());
   }, []);
+
+  const updateScrapeSettings = (next: Partial<ScrapeSettings>) => {
+    const updated = setScrapeSettings(next);
+    setScrapeSettingsState(updated);
+  };
+
+  const updateChatSettings = (next: Partial<ChatSettings>) => {
+    const updated = setChatSettings(next);
+    setChatSettingsState(updated);
+  };
 
   const updateTimeout = (key: "copywriting" | "chat" | "strategy", value: number) => {
     const next = setAITimeouts({ [key]: value });
@@ -71,12 +84,52 @@ export default function SettingsScreen() {
     }
   };
 
+  const isPersonaInstalled = (name: string) =>
+    customModes.some((m) => m.label.toLowerCase().trim() === name.toLowerCase().trim());
+
+  const handleInstallPersona = (name: string, systemPrompt: string) => {
+    addCustomMode(name, systemPrompt);
+    setCustomModes(getCustomModes());
+    toast.success(`"${name}" added to custom modes.`);
+  };
+
   return (
     <div className="space-y-8 max-w-2xl">
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Settings</h2>
-        <p className="text-muted-foreground mt-1">AI timeouts and custom chat agent modes.</p>
+        <p className="text-muted-foreground mt-1">AI timeouts, scraping options, and custom chat agent modes.</p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Scraping</CardTitle>
+          <CardDescription>
+            Optional proxy for scrape requests (e.g. http://proxy:port or socks5://…). Rate limit caps requests per minute when scraping multiple URLs.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <label className="grid gap-1.5">
+            <span className="text-sm font-medium">Proxy URL (optional)</span>
+            <Input
+              type="url"
+              placeholder="http://… or socks5://…"
+              value={scrapeSettings.proxyUrl}
+              onChange={(e) => updateScrapeSettings({ proxyUrl: e.target.value })}
+            />
+          </label>
+          <label className="grid gap-1.5">
+            <span className="text-sm font-medium">Rate limit (requests per minute, 0 = no limit)</span>
+            <Input
+              type="number"
+              min={0}
+              max={60}
+              value={scrapeSettings.rateLimitPerMinute || ""}
+              onChange={(e) => updateScrapeSettings({ rateLimitPerMinute: parseInt(e.target.value, 10) || 0 })}
+              placeholder="0"
+            />
+          </label>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -116,6 +169,91 @@ export default function SettingsScreen() {
               onChange={(e) => updateTimeout("strategy", parseInt(e.target.value, 10) || 120)}
             />
           </label>
+          <label className="grid gap-1.5">
+            <span className="text-sm font-medium">SEC summary model (optional)</span>
+            <Input
+              type="text"
+              placeholder="e.g. llama3.2 (leave empty for raw SEC list)"
+              value={chatSettings.secSummaryModel}
+              onChange={(e) => updateChatSettings({ secSummaryModel: e.target.value })}
+            />
+            <p className="text-xs text-muted-foreground">
+              When set, SEC filings in chat context are summarized into 2–3 key points per company. Saves context tokens; requires an extra Ollama call per message.
+            </p>
+          </label>
+          <div className="border-t border-border pt-4 mt-2 space-y-4">
+            <p className="text-sm font-medium">Inference / speed</p>
+            <p className="text-xs text-muted-foreground">
+              Lower context and max tokens = faster replies. Use defaults unless you need longer context or answers.
+            </p>
+            <label className="grid gap-1.5">
+              <span className="text-sm font-medium">Context size (num_ctx)</span>
+              <Input
+                type="number"
+                min={512}
+                max={16384}
+                value={chatSettings.numCtx}
+                onChange={(e) => updateChatSettings({ numCtx: parseInt(e.target.value, 10) || 4096 })}
+              />
+              <p className="text-xs text-muted-foreground">Lower = faster, less context.</p>
+            </label>
+            <label className="grid gap-1.5">
+              <span className="text-sm font-medium">Max tokens (num_predict)</span>
+              <Input
+                type="number"
+                min={256}
+                max={4096}
+                value={chatSettings.numPredict}
+                onChange={(e) => updateChatSettings({ numPredict: parseInt(e.target.value, 10) || 2048 })}
+              />
+              <p className="text-xs text-muted-foreground">Lower = faster, shorter replies.</p>
+            </label>
+            <label className="grid gap-1.5">
+              <span className="text-sm font-medium">Ollama URL</span>
+              <Input
+                type="url"
+                placeholder="http://localhost:11434"
+                value={chatSettings.ollamaBaseUrl}
+                onChange={(e) => updateChatSettings({ ollamaBaseUrl: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">Leave default unless you use a different server or port.</p>
+            </label>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Persona library</CardTitle>
+          <CardDescription>
+            Curated personas you can add to your custom modes. Install to use them in the chat persona selector; you can still export Modelfiles from custom modes.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {PERSONA_LIBRARY.map((persona) => {
+            const installed = isPersonaInstalled(persona.name);
+            return (
+              <div
+                key={persona.name}
+                className="flex flex-col gap-1.5 rounded-lg border border-border p-3"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-medium text-sm">{persona.name}</p>
+                    <p className="text-xs text-muted-foreground">{persona.description}</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={installed}
+                    onClick={() => handleInstallPersona(persona.name, persona.systemPrompt)}
+                  >
+                    {installed ? "Installed" : "Install"}
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
         </CardContent>
       </Card>
 

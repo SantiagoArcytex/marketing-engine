@@ -157,7 +157,28 @@ The chat overlay uses a single “market expert” entry point; the chosen mode 
 
 ---
 
-## 9. Prerequisites and build (concise)
+## 9. Performance (M3 / Apple Silicon)
+
+- **Prefix caching**: The chat prompt is built as `[system prompt] + [static data: ads, patterns, emails, SEC] + [user message]`. Only the user message changes per turn, so backends can cache the prefix and reduce "thinking" (prefill) time. Do not reorder so that the user message or other variable content appears at the top.
+- **Screen context**: "Screen context" (current module, selected ad, selected email row, etc.) must **not** be appended to the prompt by default. If added later, inject it only when the user explicitly asks (e.g. "what am I looking at?", "use the ad I have open") or opts in via a UI control. When included, place it immediately before the user message so the static prefix remains cacheable.
+- **KV cache**: To reduce memory and speed up prefill on memory-bound M3, add to your Modelfile (or Ollama run args if supported): `PARAMETER kv_cache_type q8_0` (or `q4_0` for more savings). Exported Modelfiles from Settings include a commented line you can uncomment.
+- **num_ctx**: Lowering `num_ctx` to the minimum needed for your context reduces prefill time and memory. The app uses 4096 by default; adjust in your Modelfile if your prompts are shorter.
+- **Speculative decoding**: Ollama's API does not yet support a draft model. When it does, the app could pass a small draft model (e.g. Qwen2.5:0.5B) alongside the main model for roughly 1.5–2x generation speed with no quality loss.
+
+### Maximum speed on M3 checklist
+
+Use this checklist to run the stack for maximum tokens/second and minimum "thinking" delay:
+
+- **Ollama with Metal**: On macOS, Ollama uses Metal by default. Ensure you're on a recent Ollama version so the GPU is used.
+- **Quantized model**: Pull and run a quantized model (e.g. `qwen2.5:7b-instruct-q4_K_M` or `qwen2.5:4b-instruct-q4_K_M`) to reduce memory and increase tokens/second. Avoid FP16 for 7B+ on 8–16 GB RAM.
+- **KV cache**: Uncomment `kv_cache_type q8_0` (or `q4_0`) in exported Modelfiles to shrink the cache and improve prefill on memory-bound M3.
+- **Context and length**: In Settings → Inference / speed, lower **Context size** and **Max tokens** (e.g. 2048 and 1024) for faster replies when you don't need long context or long answers.
+- **System**: Prefer 16GB+ unified memory; close heavy apps; disable Low Power Mode (or use a high-power profile) while using the engine; keep the model loaded (the app uses keep_alive and prewarm).
+- **MLX (advanced)**: For maximum M3 throughput, you can run an MLX-based server that exposes an Ollama-compatible API and set **Ollama URL** in Settings to that server. The app does not bundle MLX.
+
+---
+
+## 10. Prerequisites and build (concise)
 
 - **Node.js** (v18+), **Rust** (stable, 1.76+), **npm** (or yarn).
 - **Develop**: `npm install` then `npm run tauri dev`.
@@ -166,6 +187,6 @@ The chat overlay uses a single “market expert” entry point; the chosen mode 
 
 ---
 
-## 10. Summary
+## 11. Summary
 
 The Marketing Intelligence Engine is a **local-first desktop system** for marketing research: **ingest and structure ad copy**, **verify and manage email lists**, and **query and reason over that data** with an optional local LLM. Its design emphasizes **privacy**, **no required cloud**, and **extensibility** (custom personas, Modelfile export). The architecture is a Tauri backend (Rust, SQLite, scraping, email verification, SEC, Ollama) plus a React frontend with three main modules (Ad Explorer, Email Intelligence, Settings) and a global chat overlay that unifies data and personas into one assistant experience.

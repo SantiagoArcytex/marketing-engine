@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api/client";
-import { getAITimeouts } from "../lib/settings";
+import { getAITimeouts, getChatSettings } from "../lib/settings";
 import { useTaskStatus } from "../contexts/TaskStatusContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -20,14 +21,14 @@ export default function StrategyOrchestrator() {
   const [report, setReport] = useState<string>("");
 
   useEffect(() => {
-    api.ollamaListModels().then((list) => {
+    api.ollamaListModels(getChatSettings().ollamaBaseUrl).then((list) => {
       setModels(list);
       if (list.length > 0 && !selectedModel) setSelectedModel(list[0]);
     }).catch(() => setModels([])).finally(() => setLoadingModels(false));
   }, []);
 
   useEffect(() => {
-    if (selectedModel?.trim()) api.ollamaPrewarm(selectedModel.trim()).catch(() => {});
+    if (selectedModel?.trim()) api.ollamaPrewarm(selectedModel.trim(), getChatSettings().ollamaBaseUrl).catch(() => {});
   }, [selectedModel]);
 
   async function handleRun() {
@@ -52,6 +53,57 @@ export default function StrategyOrchestrator() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleExportMarkdown() {
+    if (!report.trim()) return;
+    try {
+      const path = await save({
+        defaultPath: "market-intelligence-report.md",
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+        title: "Export report (Markdown)",
+      });
+      if (path) {
+        await api.writeExportFile(path, report);
+        toast.success("Report saved");
+      }
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
+
+  function handleExportPdf() {
+    if (!report.trim()) return;
+    const win = window.open("", "_blank", "noopener,noreferrer");
+    if (!win) {
+      toast.error("Allow pop-ups to export PDF");
+      return;
+    }
+    win.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Market Intelligence Report</title>
+          <style>
+            body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1a1a1a; }
+            pre { white-space: pre-wrap; background: #f4f4f4; padding: 1rem; border-radius: 6px; }
+            h1 { font-size: 1.5rem; margin-top: 1.5rem; }
+            h2 { font-size: 1.2rem; margin-top: 1.2rem; }
+            strong { font-weight: 600; }
+          </style>
+        </head>
+        <body>
+          <pre>${report.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
+        </body>
+      </html>
+    `);
+    win.document.close();
+    win.focus();
+    setTimeout(() => {
+      win.print();
+      win.close();
+    }, 300);
   }
 
   return (
@@ -115,9 +167,21 @@ export default function StrategyOrchestrator() {
       )}
 
       <Card>
-        <CardHeader>
-          <CardTitle>Report</CardTitle>
-          <CardDescription>Strategy and takeaways from the agent.</CardDescription>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle>Report</CardTitle>
+            <CardDescription>Strategy and takeaways from the agent.</CardDescription>
+          </div>
+          {report.trim() && (
+            <div className="flex gap-2 shrink-0">
+              <Button variant="outline" size="sm" onClick={handleExportMarkdown}>
+                Export Markdown
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleExportPdf}>
+                Export PDF
+              </Button>
+            </div>
+          )}
         </CardHeader>
         <CardContent>
           {loading ? (

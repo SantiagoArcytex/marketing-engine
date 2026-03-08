@@ -1,10 +1,14 @@
 //! Strategy orchestrator: gather data via "tool" style calls and synthesize report.
 //! MCP-style tools as Rust functions; agent produces Optimal Strategy + Key Takeaways.
+//! Supports RAG: when user_message and embedding_model are provided, similar ads are injected.
 
 use rusqlite::Connection;
 use std::path::Path;
+use crate::db;
 use crate::ollama;
 use crate::sec;
+
+const RAG_TOP_K: usize = 10;
 
 /// Tool: query ads (recent N).
 fn tool_query_ads(conn: &Connection, limit: i32) -> Result<Vec<(String, String, String)>, String> {
@@ -64,15 +68,61 @@ fn tool_verified_emails_summary(conn: &Connection) -> Result<Vec<(String, i64)>,
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// Cosine similarity (vectors assumed L2-normalized from Ollama); dot product = cosine.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
 /// Build a context string from DB for the AI chat (ads, patterns, emails summary).
-pub fn build_chat_context(db_path: &Path) -> Result<String, String> {
+/// This is **static data only** (ads, pattern stats, verified emails, SEC). It must be concatenated
+/// **before** the user message in the final prompt so that:
+/// - The same prefix (system + context) is sent every time when only the user message changes.
+/// - Backends (Ollama, future MLX) can cache the prefix and avoid re-reading it (prefix caching).
+/// When user_message and embedding_model are provided and ad_embeddings exist, injects top-K similar ads (RAG).
+/// When sec_summary_model is Some, the raw SEC filings section is summarized via Ollama into "10-K highlights".
+pub fn build_chat_context(
+    db_path: &Path,
+    user_message: Option<&str>,
+    embedding_model: Option<&str>,
+    sec_summary_model: Option<&str>,
+) -> Result<String, String> {
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-    let ads = tool_query_ads(&conn, 20)?;
     let (hooks, emotions, offers) = tool_pattern_stats(&conn)?;
     let email_summary = tool_verified_emails_summary(&conn).unwrap_or_default();
 
+    let ads = if let (Some(msg), Some(model)) = (user_message, embedding_model) {
+        if let Ok(query_emb) = ollama::ollama_embed(model, msg) {
+            if let Ok(stored) = db::get_all_ad_embeddings(&conn) {
+                if !stored.is_empty() {
+                    let mut with_sim: Vec<(i64, f32)> = stored
+                        .into_iter()
+                        .map(|(ad_id, emb)| (ad_id, cosine_similarity(&query_emb, &emb)))
+                        .collect();
+                    with_sim.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    let top_ids: Vec<i64> = with_sim.into_iter().take(RAG_TOP_K).map(|(id, _)| id).collect();
+                    if let Ok(rag_ads) = db::get_ads_by_ids(&conn, &top_ids) {
+                        rag_ads
+                    } else {
+                        tool_query_ads(&conn, 20)?
+                    }
+                } else {
+                    tool_query_ads(&conn, 20)?
+                }
+            } else {
+                tool_query_ads(&conn, 20)?
+            }
+        } else {
+            tool_query_ads(&conn, 20)?
+        }
+    } else {
+        tool_query_ads(&conn, 20)?
+    };
+
     let mut ctx = String::new();
-    ctx.push_str("## Ads (recent, content | hook | offer)\n");
+    ctx.push_str("## Ads (recent or similar, content | hook | offer)\n");
     for (content, hook, offer) in ads.iter().take(15) {
         let content_preview = content.chars().take(100).collect::<String>();
         ctx.push_str(&format!("- {} | Hook: {} | Offer: {}\n", content_preview, hook, offer));
@@ -94,7 +144,30 @@ pub fn build_chat_context(db_path: &Path) -> Result<String, String> {
     }
     // SEC EDGAR: recent filings for reference companies (no API key required).
     let sec_tickers: Vec<String> = vec!["AAPL".into(), "META".into()];
-    ctx.push_str(&sec::build_sec_context(&sec_tickers));
+    let sec_raw = sec::build_sec_context(&sec_tickers);
+    ctx.push_str(&sec_raw);
+
+    // Optional: summarize SEC section via LLM for shorter, focused context (10-K highlights).
+    if let Some(model) = sec_summary_model {
+        if let Some(prefix) = ctx.strip_suffix(&sec_raw) {
+            let sec_trim = sec_raw.trim();
+            if sec_trim.len() > 150 && !sec_trim.ends_with("(none; add tickers or check network)") {
+                let prompt = format!(
+                    "Summarize the following SEC filing list into 2-3 key points per company for a marketing analyst. Be concise. Output only the summary, no preamble.\n\n{}",
+                    sec_trim
+                );
+                if let Ok(summary) = ollama::ollama_generate(model.to_string(), prompt, Some(60)) {
+                    let summary_trim = summary.trim();
+                    if !summary_trim.is_empty() {
+                        ctx.truncate(prefix.len());
+                        ctx.push_str("\n## SEC EDGAR (10-K highlights)\n");
+                        ctx.push_str(summary_trim);
+                        ctx.push('\n');
+                    }
+                }
+            }
+        }
+    }
     Ok(ctx)
 }
 
@@ -157,10 +230,10 @@ pub fn run_strategy_agent_llm(
     model: &str,
     timeout_secs: Option<u64>,
 ) -> Result<String, String> {
-    let context = build_chat_context(db_path).unwrap_or_default();
+    let context = build_chat_context(db_path, None, None, None).unwrap_or_default();
     let prompt = format!(
         "Given the following marketing data, produce a concise strategy report for this query. Output markdown with sections: **Optimal Strategy**, **Key Takeaways**, and optional **Sample ad copy**. Be actionable and specific.\n\nQuery: {}",
         query.trim()
     );
-    ollama::ollama_chat(model.to_string(), prompt, context, timeout_secs, None)
+    ollama::ollama_chat(model.to_string(), prompt, context, timeout_secs, None, None, None, None)
 }

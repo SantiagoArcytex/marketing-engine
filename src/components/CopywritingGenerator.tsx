@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { api } from "../api/client";
-import { getAITimeouts } from "../lib/settings";
+import { getAITimeouts, getChatSettings } from "../lib/settings";
 import { useTaskStatus } from "../contexts/TaskStatusContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -22,14 +22,14 @@ export default function CopywritingGenerator() {
   const [variants, setVariants] = useState<string[]>([]);
 
   useEffect(() => {
-    api.ollamaListModels().then((list) => {
+    api.ollamaListModels(getChatSettings().ollamaBaseUrl).then((list) => {
       setModels(list);
       if (list.length > 0 && !selectedModel) setSelectedModel(list[0]);
     }).catch(() => setModels([])).finally(() => setLoadingModels(false));
   }, []);
 
   useEffect(() => {
-    if (selectedModel?.trim()) api.ollamaPrewarm(selectedModel.trim()).catch(() => {});
+    if (selectedModel?.trim()) api.ollamaPrewarm(selectedModel.trim(), getChatSettings().ollamaBaseUrl).catch(() => {});
   }, [selectedModel]);
 
   async function handleGenerate() {

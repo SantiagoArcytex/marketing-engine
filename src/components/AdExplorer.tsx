@@ -1,7 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { api } from "../api/client";
+import { getScrapeSettings } from "@/lib/settings";
+import { useListAds, usePatternStats, useInvalidateAds } from "@/hooks/useAdsQueries";
 import type { AdRow } from "../shared/schema";
-import type { PatternStats } from "../shared/schema";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -31,6 +33,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import PatternCharts from "./PatternCharts";
 
+const TABLE_ROW_HEIGHT = 52;
+const CARD_ROW_HEIGHT = 140;
+const CARDS_PER_ROW = 3;
+
 function truncate(s: string | null | undefined, max: number): string {
   if (s == null) return "—";
   return s.length <= max ? s : s.slice(0, max) + "…";
@@ -38,18 +44,164 @@ function truncate(s: string | null | undefined, max: number): string {
 
 type ViewTab = "overview" | "by-source" | "all-ads";
 
+function VirtualizedAdsList({
+  data,
+  scrollRef,
+  listViewMode,
+  loadingList,
+  onSelectAd,
+  onSelectSource,
+}: {
+  data: AdRow[];
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  listViewMode: "table" | "cards";
+  loadingList: boolean;
+  onSelectAd: (id: number) => void;
+  onSelectSource: (source: string) => void;
+}) {
+  const tableVirtualizer = useVirtualizer({
+    count: data.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => TABLE_ROW_HEIGHT,
+    overscan: 5,
+  });
+  const cardRowCount = Math.ceil(data.length / CARDS_PER_ROW);
+  const cardsVirtualizer = useVirtualizer({
+    count: cardRowCount,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => CARD_ROW_HEIGHT,
+    overscan: 2,
+  });
+
+  if (loadingList) {
+    return (
+      <div className="flex h-[400px] items-center justify-center rounded-lg border border-border">
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-8 w-[200px]" />
+          <Skeleton className="h-8 w-[180px]" />
+          <Skeleton className="h-8 w-[220px]" />
+        </div>
+      </div>
+    );
+  }
+  if (data.length === 0) {
+    return (
+      <div className="flex h-[200px] items-center justify-center rounded-lg border border-border text-muted-foreground">
+        No ads to show. Run a scrape or adjust filters.
+      </div>
+    );
+  }
+
+  if (listViewMode === "table") {
+    const virtualItems = tableVirtualizer.getVirtualItems();
+    const totalSize = tableVirtualizer.getTotalSize();
+    return (
+      <div className="rounded-lg border border-border overflow-hidden" style={{ minHeight: totalSize }}>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-[40%]">Content</TableHead>
+              <TableHead>Hook</TableHead>
+              <TableHead>Emotion</TableHead>
+              <TableHead>Offer</TableHead>
+              <TableHead>Source</TableHead>
+              <TableHead>Date</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody style={{ height: totalSize, position: "relative" }}>
+            {virtualItems.map((virtualRow) => {
+              const row = data[virtualRow.index];
+              return (
+                <TableRow
+                  key={row.id}
+                  className="min-h-[44px] cursor-pointer absolute left-0 w-full"
+                  style={{
+                    height: TABLE_ROW_HEIGHT,
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                  onClick={() => onSelectAd(row.id)}
+                >
+                  <TableCell className="max-w-[320px] truncate align-middle" title={row.content ?? undefined}>
+                    {truncate(row.content, 80)}
+                  </TableCell>
+                  <TableCell className="align-middle">{row.hook ?? "—"}</TableCell>
+                  <TableCell className="align-middle">{row.emotion ?? "—"}</TableCell>
+                  <TableCell className="align-middle">{row.offer ?? "—"}</TableCell>
+                  <TableCell
+                    className="align-middle text-primary underline decoration-primary/50 underline-offset-2"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (row.source) onSelectSource(row.source);
+                    }}
+                  >
+                    {row.source ?? "—"}
+                  </TableCell>
+                  <TableCell className="align-middle text-muted-foreground">{row.created_at ?? "—"}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    );
+  }
+
+  const cardVirtualItems = cardsVirtualizer.getVirtualItems();
+  const cardsTotalSize = cardsVirtualizer.getTotalSize();
+  return (
+    <div
+      style={{ height: cardsTotalSize, position: "relative" }}
+      className="w-full"
+    >
+      {cardVirtualItems.map((virtualRow) => {
+        const start = virtualRow.index * CARDS_PER_ROW;
+        const rowAds = data.slice(start, start + CARDS_PER_ROW);
+        return (
+          <div
+            key={virtualRow.key}
+            className="absolute left-0 grid w-full gap-4 sm:grid-cols-2 lg:grid-cols-3"
+            style={{
+              height: CARD_ROW_HEIGHT,
+              transform: `translateY(${virtualRow.start}px)`,
+            }}
+          >
+            {rowAds.map((row) => (
+              <Card
+                key={row.id}
+                className="min-h-[44px] cursor-pointer transition-colors hover:bg-muted/50"
+                onClick={() => onSelectAd(row.id)}
+              >
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium truncate" title={row.source ?? undefined}>
+                    {row.source ?? "—"}
+                  </CardTitle>
+                  <CardDescription className="line-clamp-2 text-xs">{truncate(row.content, 80)}</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap gap-1.5 pt-0 text-xs text-muted-foreground">
+                  {row.hook && <span className="rounded bg-muted px-1.5 py-0.5">{row.hook}</span>}
+                  {row.emotion && <span className="rounded bg-muted px-1.5 py-0.5">{row.emotion}</span>}
+                  {row.offer && <span className="rounded bg-muted px-1.5 py-0.5">{row.offer}</span>}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function AdExplorer() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
-  const [loadingList, setLoadingList] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [indexingEmbeddings, setIndexingEmbeddings] = useState(false);
+  const [embeddingModel, setEmbeddingModel] = useState("nomic-embed-text");
   const [error, setError] = useState<string | null>(null);
-  const [rows, setRows] = useState<AdRow[]>([]);
   const [sourceFilter, setSourceFilter] = useState("");
   const [hookFilter, setHookFilter] = useState<string>("");
   const [emotionFilter, setEmotionFilter] = useState<string>("");
   const [offerFilter, setOfferFilter] = useState<string>("");
-  const [patternStats, setPatternStats] = useState<PatternStats | null>(null);
   const [viewTab, setViewTab] = useState<ViewTab>("overview");
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [lastScrapeResult, setLastScrapeResult] = useState<{
@@ -61,40 +213,20 @@ export default function AdExplorer() {
   const [listViewMode, setListViewMode] = useState<"table" | "cards">("table");
   const [batchKeywords, setBatchKeywords] = useState("");
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; keyword: string } | null>(null);
+  const [powerMode, setPowerMode] = useState(false);
+  const [browserUrl, setBrowserUrl] = useState("");
+  const adsListScrollRef = useRef<HTMLDivElement>(null);
 
-  const loadAds = useCallback(async () => {
-    setLoadingList(true);
-    setError(null);
-    try {
-      const list = await api.listAds({
-        sourceFilter: sourceFilter || undefined,
-        limit: 500,
-      });
-      setRows(list);
-    } catch (e) {
-      setError(String(e));
-      if (!String(e).includes("invoke")) setRows([]);
-    } finally {
-      setLoadingList(false);
-    }
-  }, [sourceFilter]);
+  const { data: adsData, isPending: adsLoading, error: adsError, refetch: refetchAds } = useListAds({
+    sourceFilter: sourceFilter || undefined,
+    limit: 500,
+  });
+  const { data: patternStats } = usePatternStats();
+  const invalidateAds = useInvalidateAds();
 
-  const loadPatternStats = useCallback(async () => {
-    try {
-      const stats = await api.getPatternStats();
-      setPatternStats(stats ?? null);
-    } catch {
-      setPatternStats(null);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadAds();
-  }, [loadAds]);
-
-  useEffect(() => {
-    loadPatternStats();
-  }, [loadPatternStats]);
+  const rows = adsData ?? [];
+  const loadingList = adsLoading;
+  const displayError = error ?? (adsError ? String(adsError) : null);
 
   const filteredRowsAllAds = useMemo(() => {
     let r = rows;
@@ -140,10 +272,16 @@ export default function AdExplorer() {
     setError(null);
     setLastScrapeResult(null);
     try {
-      const count = await api.scrapeAds({ query: query.trim(), mode });
+      const scrapeSettings = getScrapeSettings();
+      const count = await api.scrapeAds({
+        query: query.trim(),
+        mode,
+        scrapeMode: powerMode ? "browser" : "static",
+        url: powerMode ? browserUrl.trim() || undefined : undefined,
+        proxy: scrapeSettings.proxyUrl?.trim() || undefined,
+      });
       setLastScrapeResult({ mode, count, query: query.trim() });
-      await loadAds();
-      await loadPatternStats();
+      invalidateAds();
       toast.success(mode === "replace" ? `Scraped ${count} ads (replaced)` : `Scraped ${count} ads (appended)`);
     } catch (e) {
       const msg = String(e);
@@ -167,12 +305,21 @@ export default function AdExplorer() {
       let totalCount = 0;
       for (let i = 0; i < keywords.length; i++) {
         setBatchProgress({ current: i + 1, total: keywords.length, keyword: keywords[i] });
-        const count = await api.scrapeAds({ query: keywords[i], mode: i === 0 ? mode : "append" });
+        const scrapeSettings = getScrapeSettings();
+        const count = await api.scrapeAds({
+          query: keywords[i],
+          mode: i === 0 ? mode : "append",
+          scrapeMode: powerMode ? "browser" : "static",
+          url: powerMode ? browserUrl.trim() || undefined : undefined,
+          proxy: scrapeSettings.proxyUrl?.trim() || undefined,
+        });
         totalCount += count;
+        if (scrapeSettings.rateLimitPerMinute > 0 && i < keywords.length - 1) {
+          await new Promise((r) => setTimeout(r, 60000 / scrapeSettings.rateLimitPerMinute));
+        }
       }
       setLastScrapeResult({ mode, count: totalCount, query: `${keywords.length} keywords` });
-      await loadAds();
-      await loadPatternStats();
+      invalidateAds();
       toast.success(`Batch scrape complete: ${totalCount} ads from ${keywords.length} keywords`);
     } catch (e) {
       const msg = String(e);
@@ -189,8 +336,7 @@ export default function AdExplorer() {
     setError(null);
     try {
       await api.analyzePatterns(null);
-      await loadAds();
-      await loadPatternStats();
+      invalidateAds();
       toast.success("Pattern analysis complete");
     } catch (e) {
       const msg = String(e);
@@ -201,123 +347,48 @@ export default function AdExplorer() {
     }
   }
 
+  async function handleIndexEmbeddings() {
+    const model = embeddingModel.trim() || "nomic-embed-text";
+    setIndexingEmbeddings(true);
+    setError(null);
+    try {
+      const count = await api.indexAdsEmbeddings(model);
+      toast.success(`Indexed ${count} ads for semantic search. Chat will use RAG when available.`);
+    } catch (e) {
+      const msg = String(e);
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setIndexingEmbeddings(false);
+    }
+  }
+
   const selectedAd = useMemo(
     () => (selectedAdId != null ? rows.find((r) => r.id === selectedAdId) ?? null : null),
     [rows, selectedAdId]
   );
 
-  function renderAdsTable(data: AdRow[]) {
-    if (loadingList) {
-      return (
-        <div className="flex h-[400px] items-center justify-center rounded-lg border border-border">
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-8 w-[200px]" />
-            <Skeleton className="h-8 w-[180px]" />
-            <Skeleton className="h-8 w-[220px]" />
-          </div>
-        </div>
-      );
-    }
-    if (data.length === 0) {
-      return (
-        <div className="flex h-[200px] items-center justify-center rounded-lg border border-border text-muted-foreground">
-          No ads to show. Run a scrape or adjust filters.
-        </div>
-      );
-    }
-    return (
-      <div className="rounded-lg border border-border overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[40%]">Content</TableHead>
-              <TableHead>Hook</TableHead>
-              <TableHead>Emotion</TableHead>
-              <TableHead>Offer</TableHead>
-              <TableHead>Source</TableHead>
-              <TableHead>Date</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data.map((row) => (
-              <TableRow
-                key={row.id}
-                className="min-h-[44px] cursor-pointer"
-                onClick={() => setSelectedAdId(row.id)}
-              >
-                <TableCell className="max-w-[320px] truncate align-middle" title={row.content ?? undefined}>
-                  {truncate(row.content, 80)}
-                </TableCell>
-                <TableCell className="align-middle">{row.hook ?? "—"}</TableCell>
-                <TableCell className="align-middle">{row.emotion ?? "—"}</TableCell>
-                <TableCell className="align-middle">{row.offer ?? "—"}</TableCell>
-                <TableCell
-                  className="align-middle text-primary underline decoration-primary/50 underline-offset-2 hover:decoration-primary"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (row.source) {
-                      setSelectedSource(row.source);
-                      setViewTab("by-source");
-                    }
-                  }}
-                >
-                  {row.source ?? "—"}
-                </TableCell>
-                <TableCell className="align-middle text-muted-foreground">{row.created_at ?? "—"}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-    );
-  }
-
-  function renderAdsCards(data: AdRow[]) {
-    if (loadingList) {
-      return (
-        <div className="flex h-[400px] items-center justify-center rounded-lg border border-border">
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-8 w-[200px]" />
-            <Skeleton className="h-8 w-[180px]" />
-            <Skeleton className="h-8 w-[220px]" />
-          </div>
-        </div>
-      );
-    }
-    if (data.length === 0) {
-      return (
-        <div className="flex h-[200px] items-center justify-center rounded-lg border border-border text-muted-foreground">
-          No ads to show. Run a scrape or adjust filters.
-        </div>
-      );
-    }
-    return (
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {data.map((row) => (
-          <Card
-            key={row.id}
-            className="min-h-[44px] cursor-pointer transition-colors hover:bg-muted/50"
-            onClick={() => setSelectedAdId(row.id)}
-          >
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium truncate" title={row.source ?? undefined}>
-                {row.source ?? "—"}
-              </CardTitle>
-              <CardDescription className="line-clamp-2 text-xs">{truncate(row.content, 80)}</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-wrap gap-1.5 pt-0 text-xs text-muted-foreground">
-              {row.hook && <span className="rounded bg-muted px-1.5 py-0.5">{row.hook}</span>}
-              {row.emotion && <span className="rounded bg-muted px-1.5 py-0.5">{row.emotion}</span>}
-              {row.offer && <span className="rounded bg-muted px-1.5 py-0.5">{row.offer}</span>}
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-    );
-  }
+  const handleSelectSource = useCallback((source: string) => {
+    setSelectedSource(source);
+    setViewTab("by-source");
+  }, []);
 
   function renderAdsList(data: AdRow[]) {
-    return listViewMode === "table" ? renderAdsTable(data) : renderAdsCards(data);
+    return (
+      <div
+        ref={adsListScrollRef}
+        className="h-[60vh] min-h-[400px] overflow-auto rounded-lg border border-border"
+      >
+        <VirtualizedAdsList
+          data={data}
+          scrollRef={adsListScrollRef}
+          listViewMode={listViewMode}
+          loadingList={loadingList}
+          onSelectAd={setSelectedAdId}
+          onSelectSource={handleSelectSource}
+        />
+      </div>
+    );
   }
 
   return (
@@ -367,7 +438,7 @@ export default function AdExplorer() {
                 size="lg"
                 className="min-h-[44px]"
                 onClick={() => handleScrape("replace")}
-                disabled={loading || !query.trim()}
+                disabled={loading || !query.trim() || (powerMode && !browserUrl.trim())}
               >
                 {loading ? "Scraping…" : "New search (replace)"}
               </Button>
@@ -376,14 +447,37 @@ export default function AdExplorer() {
                 variant="secondary"
                 className="min-h-[44px]"
                 onClick={() => handleScrape("append")}
-                disabled={loading || !query.trim()}
+                disabled={loading || !query.trim() || (powerMode && !browserUrl.trim())}
               >
                 Add more (append)
               </Button>
             </div>
           </div>
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={powerMode}
+                onChange={(e) => setPowerMode(e.target.checked)}
+                className="rounded border-input"
+              />
+              <span className="text-sm font-medium">Use browser (Power Mode)</span>
+            </label>
+            {powerMode && (
+              <label className="flex flex-col gap-1.5 min-w-[280px]">
+                <span className="text-sm font-medium">URL to scrape (JS-heavy pages)</span>
+                <Input
+                  className="h-11 min-h-[44px]"
+                  placeholder="https://…"
+                  value={browserUrl}
+                  onChange={(e) => setBrowserUrl(e.target.value)}
+                />
+              </label>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground">
             New search (replace) clears previous results for this keyword. Add more keeps existing ads and adds new ones.
+            Power Mode uses headless Chrome for JavaScript-rendered pages; enter a valid URL when enabled.
           </p>
           <div className="space-y-2">
             <label className="flex flex-col gap-1.5">
@@ -401,7 +495,7 @@ export default function AdExplorer() {
                 variant="outline"
                 size="sm"
                 onClick={() => handleBatchScrape("replace")}
-                disabled={loading || !batchKeywords.trim()}
+                disabled={loading || !batchKeywords.trim() || (powerMode && !browserUrl.trim())}
               >
                 Scrape all (replace)
               </Button>
@@ -409,7 +503,7 @@ export default function AdExplorer() {
                 variant="outline"
                 size="sm"
                 onClick={() => handleBatchScrape("append")}
-                disabled={loading || !batchKeywords.trim()}
+                disabled={loading || !batchKeywords.trim() || (powerMode && !browserUrl.trim())}
               >
                 Scrape all (append)
               </Button>
@@ -425,9 +519,9 @@ export default function AdExplorer() {
         </CardContent>
       </Card>
 
-      {error && (
+      {displayError && (
         <div className="flex items-center justify-between rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <span>{error}</span>
+          <span>{displayError}</span>
           <button type="button" className="shrink-0 underline focus:outline-none" onClick={() => setError(null)} aria-label="Dismiss">Dismiss</button>
         </div>
       )}
@@ -476,7 +570,7 @@ export default function AdExplorer() {
               </CardContent>
             </Card>
           </div>
-          <PatternCharts stats={patternStats} />
+          <PatternCharts stats={patternStats ?? null} />
           <Card>
             <CardHeader className="flex flex-row items-center justify-between gap-4">
               <div>
@@ -493,8 +587,7 @@ export default function AdExplorer() {
                     setError(null);
                     try {
                       await api.clearAds();
-                      await loadAds();
-                      await loadPatternStats();
+                      invalidateAds();
                       setLastScrapeResult(null);
                       setSelectedSource(null);
                     } catch (e) {
@@ -627,12 +720,29 @@ export default function AdExplorer() {
               </Select>
             </div>
             <div className="flex min-h-[44px] items-end gap-2">
-              <Button variant="outline" onClick={loadAds} disabled={loadingList}>
+              <Button variant="outline" onClick={() => refetchAds()} disabled={loadingList}>
                 Refresh list
               </Button>
               <Button variant="outline" onClick={handleAnalyze} disabled={analyzing || loadingList}>
                 {analyzing ? "Analyzing…" : "Analyze patterns"}
               </Button>
+              <div className="flex items-center gap-2">
+                <Input
+                  className="h-9 w-[180px] font-mono text-sm"
+                  placeholder="nomic-embed-text"
+                  value={embeddingModel}
+                  onChange={(e) => setEmbeddingModel(e.target.value)}
+                  title="Ollama embedding model for semantic search"
+                />
+                <Button
+                  variant="outline"
+                  onClick={handleIndexEmbeddings}
+                  disabled={indexingEmbeddings || loadingList || rows.length === 0}
+                  title="Index ad content for RAG; requires the embedding model in Ollama"
+                >
+                  {indexingEmbeddings ? "Indexing…" : "Index for semantic search"}
+                </Button>
+              </div>
               <div className="flex gap-1">
                 <Button
                   variant={listViewMode === "table" ? "secondary" : "ghost"}

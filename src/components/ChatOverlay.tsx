@@ -16,10 +16,12 @@ import {
   MoreHorizontal,
   Pencil,
   Trash2,
+  ImagePlus,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../api/client";
 import { getAllAgentModes, getSystemPromptForMode, getAgentModeIconName } from "@/lib/agentModes";
+import { getChatSettings } from "@/lib/settings";
 import {
   Select,
   SelectContent,
@@ -139,6 +141,8 @@ export default function ChatOverlay() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [attachedImageBase64, setAttachedImageBase64] = useState<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const [pendingTyping, setPendingTyping] = useState<{
     chatId: string;
     messageId: string;
@@ -202,7 +206,7 @@ export default function ChatOverlay() {
     setLoadingModels(true);
     setModelsError(null);
     try {
-      const list = await api.ollamaListModels();
+      const list = await api.ollamaListModels(getChatSettings().ollamaBaseUrl);
       setModels(list);
       if (list.length > 0) {
         const mode = getAllAgentModes().find((m) => m.id === selectedAgentMode);
@@ -237,7 +241,7 @@ export default function ChatOverlay() {
   /** Pre-warm selected model so the first message is fast (no cold start). */
   useEffect(() => {
     if (!selectedModel?.trim()) return;
-    api.ollamaPrewarm(selectedModel.trim()).catch(() => {});
+    api.ollamaPrewarm(selectedModel.trim(), getChatSettings().ollamaBaseUrl).catch(() => {});
   }, [selectedModel]);
 
   useEffect(() => {
@@ -290,10 +294,15 @@ export default function ChatOverlay() {
       });
 
       try {
+        const settings = getChatSettings();
         await api.ollamaChatStream(
           selectedModel,
           text.trim(),
-          getSystemPromptForMode(selectedAgentMode)
+          getSystemPromptForMode(selectedAgentMode),
+          settings.secSummaryModel || undefined,
+          settings.ollamaBaseUrl,
+          settings.numCtx,
+          settings.numPredict
         );
       } catch (e) {
         setSendError(String(e));
@@ -314,9 +323,35 @@ export default function ChatOverlay() {
 
   async function handleSend() {
     const text = input.trim();
-    if (!text) return;
+    if (!text && !attachedImageBase64) return;
+    setSendError(null);
+
+    let messageToSend = text;
+    if (attachedImageBase64) {
+      setSending(true);
+      try {
+        const visionPrompt = text || "Describe this image in detail.";
+        const settings = getChatSettings();
+        const analysis = await api.ollamaVision({
+          model: selectedModel ?? "",
+          prompt: visionPrompt,
+          imageBase64: attachedImageBase64.startsWith("data:") ? attachedImageBase64.split(",", 2)[1] : attachedImageBase64,
+          ollamaBaseUrl: settings.ollamaBaseUrl,
+          numCtx: settings.numCtx,
+          numPredict: settings.numPredict,
+        });
+        messageToSend = text ? `${text}\n\n[Image analysis]: ${analysis}` : `[Image analysis]: ${analysis}`;
+      } catch (e) {
+        setSendError(String(e));
+        setSending(false);
+        return;
+      } finally {
+        setAttachedImageBase64(null);
+      }
+      setSending(false);
+    }
     setInput("");
-    await sendUserMessage(text);
+    await sendUserMessage(messageToSend);
   }
 
   const handleFetchAllow = useCallback(
@@ -781,9 +816,37 @@ export default function ChatOverlay() {
               {sendError && <p className="px-4 text-sm text-destructive">{sendError}</p>}
 
               <div className="shrink-0 flex gap-2 border-t border-border p-4">
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      const data = reader.result;
+                      if (typeof data === "string") setAttachedImageBase64(data);
+                    };
+                    reader.readAsDataURL(file);
+                    e.target.value = "";
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="min-h-[44px] min-w-[44px] shrink-0"
+                  onClick={() => imageInputRef.current?.click()}
+                  disabled={sending || !selectedModel || !activeChatId}
+                  title="Attach image (vision model required, e.g. llava)"
+                >
+                  <ImagePlus className="size-5" />
+                </Button>
                 <Input
                   className="min-h-[44px] flex-1"
-                  placeholder="Ask anything…"
+                  placeholder={attachedImageBase64 ? "Add a prompt or send to analyze image…" : "Ask anything…"}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
@@ -793,12 +856,22 @@ export default function ChatOverlay() {
                   className="min-h-[44px]"
                   onClick={handleSend}
                   disabled={
-                    sending || !input.trim() || !selectedModel || models.length === 0 || !activeChatId
+                    sending ||
+                    (!input.trim() && !attachedImageBase64) ||
+                    !selectedModel ||
+                    models.length === 0 ||
+                    !activeChatId
                   }
                 >
                   {sending ? "…" : "Send"}
                 </Button>
               </div>
+              {attachedImageBase64 && (
+                <div className="px-4 pb-2 flex items-center gap-2 text-sm text-muted-foreground">
+                  <span className="size-2 rounded-full bg-primary" />
+                  Image attached — send to analyze with vision model (e.g. llava, llama3.2-vision).
+                </div>
+              )}
             </div>
           </div>
         </div>

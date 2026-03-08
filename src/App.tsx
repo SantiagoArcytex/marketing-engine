@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Compass, Mail, Loader2, Check, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -90,11 +91,19 @@ function AppContent() {
   );
 }
 
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { staleTime: 30_000 },
+  },
+});
+
 function App() {
   return (
-    <TaskStatusProvider>
-      <AppContent />
-    </TaskStatusProvider>
+    <QueryClientProvider client={queryClient}>
+      <TaskStatusProvider>
+        <AppContent />
+      </TaskStatusProvider>
+    </QueryClientProvider>
   );
 }
 

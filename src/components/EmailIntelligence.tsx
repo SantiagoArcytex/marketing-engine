@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { api } from "../api/client";
+import { useVerifiedEmails, useInvalidateVerifiedEmails } from "@/hooks/useAdsQueries";
 import type { VerifiedEmailRow, VerifyResult } from "../shared/schema";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -82,14 +83,23 @@ export default function EmailIntelligence() {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkCount, setBulkCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [rows, setRows] = useState<VerifiedEmailRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loadingList, setLoadingList] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [statusFilter, setStatusFilter] = useState("");
   const [qualityFilter, setQualityFilter] = useState("");
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
+
+  const {
+    data: verifiedData,
+    isPending: loadingList,
+    isFetchingNextPage: loadingMore,
+    fetchNextPage,
+    hasNextPage: hasMore,
+    refetch: refetchVerifiedEmails,
+  } = useVerifiedEmails({ statusFilter: statusFilter || undefined, search: search || undefined });
+  const invalidateVerifiedEmails = useInvalidateVerifiedEmails();
+
+  const rows = verifiedData?.pages.flatMap((p) => p.items) ?? [];
+  const total = verifiedData?.pages[0]?.total ?? 0;
   const [selectedRow, setSelectedRow] = useState<VerifiedEmailRow | null>(null);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportStatusFilter, setExportStatusFilter] = useState("");
@@ -97,6 +107,8 @@ export default function EmailIntelligence() {
   const [exportSearch, setExportSearch] = useState("");
   const [exportSavePath, setExportSavePath] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  type CrmFormat = "default" | "hubspot" | "apollo";
+  const [exportCrmFormat, setExportCrmFormat] = useState<CrmFormat>("default");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // CSV cross-reference cleaner
@@ -113,53 +125,6 @@ export default function EmailIntelligence() {
   const [crossRefSummary, setCrossRefSummary] = useState<string | null>(null);
   const [savingCrossRef, setSavingCrossRef] = useState(false);
 
-  const loadVerified = useCallback(
-    async (offset: number) => {
-      const append = offset > 0;
-      if (append) {
-        setLoadingMore(true);
-      } else {
-        setLoadingList(true);
-      }
-      try {
-        const res = await api.getVerifiedEmails({
-          limit: PAGE_SIZE,
-          offset,
-          statusFilter: statusFilter || undefined,
-          search: search || undefined,
-        });
-        if (append) {
-          setRows((prev) => [...prev, ...res.items]);
-        } else {
-          setRows(res.items);
-        }
-        setTotal(res.total);
-      } catch (e) {
-        const msg = String(e);
-        setError(msg);
-        if (!append) setRows([]);
-        toast.error(msg);
-      } finally {
-        setLoadingList(false);
-        setLoadingMore(false);
-      }
-    },
-    [statusFilter, search]
-  );
-
-  const loadInitial = useCallback(() => {
-    loadVerified(0);
-  }, [loadVerified]);
-
-  const loadMore = useCallback(() => {
-    if (loadingMore || loadingList || rows.length >= total) return;
-    loadVerified(rows.length);
-  }, [loadVerified, loadingMore, loadingList, rows.length, total]);
-
-  useEffect(() => {
-    loadInitial();
-  }, [loadInitial]);
-
   const handleSearchSubmit = () => {
     setSearch(searchInput.trim());
   };
@@ -167,7 +132,6 @@ export default function EmailIntelligence() {
   const filteredRows = qualityFilter
     ? rows.filter((r) => r.quality === qualityFilter)
     : rows;
-  const hasMore = rows.length < total;
 
   // Cross-reference: reference set size for display
   const referenceEmailCount = (() => {
@@ -206,17 +170,23 @@ export default function EmailIntelligence() {
     if (path != null) setExportSavePath(path);
   }
 
+  const CRM_HEADERS: Record<CrmFormat, string[]> = {
+    default: ["email", "status", "quality", "verified_at", "syntax_ok", "mx_ok", "disposable_ok"],
+    hubspot: ["Email", "Status", "Quality", "Verified At", "Syntax OK", "MX OK", "Disposable OK"],
+    apollo: ["Contact Email", "Status", "Quality", "Verified At", "Syntax OK", "MX OK", "Disposable OK"],
+  };
+
   function buildCsvFromRows(rowsToExport: VerifiedEmailRow[]): string {
-    const headers = ["email", "status", "quality", "verified_at", "syntax_ok", "mx_ok", "disposable_ok"];
+    const headers = CRM_HEADERS[exportCrmFormat];
     const escape = (v: string | number | null | undefined) => {
       const s = v == null ? "" : String(v);
       return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
     };
+    const rowValues = (r: VerifiedEmailRow) =>
+      [r.email, r.status, r.quality, r.verified_at ?? "", r.syntax_ok ?? "", r.mx_ok ?? "", r.disposable_ok ?? ""];
     const lines = [
       headers.join(","),
-      ...rowsToExport.map((r) =>
-        [r.email, r.status, r.quality, r.verified_at ?? "", r.syntax_ok ?? "", r.mx_ok ?? "", r.disposable_ok ?? ""].map(escape).join(",")
-      ),
+      ...rowsToExport.map((r) => rowValues(r).map(escape).join(",")),
     ];
     return lines.join("\n");
   }
@@ -360,9 +330,9 @@ export default function EmailIntelligence() {
     if (!el || !hasMore || loadingMore) return;
     const { scrollTop, scrollHeight, clientHeight } = el;
     if (scrollTop + clientHeight >= scrollHeight - 80) {
-      loadMore();
+      fetchNextPage();
     }
-  }, [hasMore, loadingMore, loadMore]);
+  }, [hasMore, loadingMore, fetchNextPage]);
 
   async function handleVerifySingle() {
     if (!singleEmail.trim()) return;
@@ -372,7 +342,7 @@ export default function EmailIntelligence() {
     try {
       const result = await api.verifyEmailAndStore(singleEmail.trim());
       setSingleResult(result);
-      loadInitial();
+      invalidateVerifiedEmails();
       toast.success(`Verified: ${result.status} · ${result.quality}`);
     } catch (e) {
       const msg = String(e);
@@ -396,7 +366,7 @@ export default function EmailIntelligence() {
     try {
       const count = await api.verifyBulk(bulkPath.trim());
       setBulkCount(count);
-      loadInitial();
+      invalidateVerifiedEmails();
       toast.success(`Bulk verification complete: ${count} emails verified`);
     } catch (e) {
       const msg = String(e);
@@ -523,7 +493,7 @@ export default function EmailIntelligence() {
                 <SelectItem value="risky">Risky</SelectItem>
               </SelectContent>
             </Select>
-            <Button variant="outline" onClick={() => { loadInitial(); toast.success("List refreshed"); }} disabled={loadingList} className="min-h-[44px]">
+            <Button variant="outline" onClick={() => { refetchVerifiedEmails(); toast.success("List refreshed"); }} disabled={loadingList} className="min-h-[44px]">
               Refresh list
             </Button>
             <Button variant="secondary" onClick={openExportModal} className="min-h-[44px]">
@@ -706,6 +676,27 @@ export default function EmailIntelligence() {
                 value={exportSearch}
                 onChange={(e) => setExportSearch(e.target.value)}
               />
+            </div>
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium">Export for CRM</span>
+              <Select
+                value={exportCrmFormat}
+                onValueChange={(v) => setExportCrmFormat(v as CrmFormat)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Default (raw columns)</SelectItem>
+                  <SelectItem value="hubspot">HubSpot CSV</SelectItem>
+                  <SelectItem value="apollo">Apollo.io CSV</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {exportCrmFormat === "default" && "Standard column names."}
+                {exportCrmFormat === "hubspot" && "Headers match HubSpot contact import (Email, Status, Quality, etc.)."}
+                {exportCrmFormat === "apollo" && "Headers match Apollo.io contact import (Contact Email, Status, etc.)."}
+              </p>
             </div>
             <div className="flex flex-col gap-2">
               <span className="text-sm font-medium">Save location</span>

@@ -1,4 +1,9 @@
 import { z } from "zod";
+import type { AdRow as AdRowTs, PatternStats as PatternStatsTs } from "./ts-rs";
+
+// Types from Rust (ts-rs) for AdRow and PatternStats; Zod schemas below for runtime parsing.
+export type AdRow = AdRowTs;
+export type PatternStats = PatternStatsTs;
 
 // --- Ads ---
 export const AdRowSchema = z.object({
@@ -11,7 +16,6 @@ export const AdRowSchema = z.object({
   source: z.string().nullable(),
   created_at: z.string().nullable(),
 });
-export type AdRow = z.infer<typeof AdRowSchema>;
 
 export const ListAdsInputSchema = z.object({
   sourceFilter: z.string().optional(),
@@ -25,13 +29,15 @@ export const PatternStatsSchema = z.object({
   emotions: z.array(z.tuple([z.string(), z.number()])),
   offers: z.array(z.tuple([z.string(), z.number()])),
 });
-export type PatternStats = z.infer<typeof PatternStatsSchema>;
 
-// --- Scrape (Step 2 will add mode; for now query only) ---
+// --- Scrape ---
 export const ScrapeAdsInputSchema = z.object({
   query: z.string(),
   mode: z.enum(["replace", "append"]).optional(),
   limit: z.number().optional(),
+  scrapeMode: z.enum(["static", "browser"]).optional(),
+  url: z.string().optional(),
+  proxy: z.string().optional(),
 });
 export type ScrapeAdsInput = z.infer<typeof ScrapeAdsInputSchema>;
 

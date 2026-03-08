@@ -32,6 +32,8 @@ pub fn init_db(db_path: &Path) -> Result<(), rusqlite::Error> {
         std::fs::create_dir_all(parent).expect("failed to create app data dir");
     }
     let conn = Connection::open(db_path)?;
+    // PRAGMA journal_mode returns a row; use execute_batch so we don't need to consume it.
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS ads (
@@ -54,11 +56,16 @@ pub fn init_db(db_path: &Path) -> Result<(), rusqlite::Error> {
     )?;
     migrate_ads_schema(&conn)?;
     migrate_verified_emails_tests(&conn)?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ad_embeddings (ad_id INTEGER PRIMARY KEY REFERENCES ads(id), embedding TEXT NOT NULL)",
+        [],
+    )?;
     Ok(())
 }
 
 /// Single ad row for JSON serialization.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AdRow {
     pub id: i64,
     pub content: Option<String>,
@@ -230,7 +237,8 @@ pub fn upsert_verified_email(
 }
 
 /// List verified emails with optional status filter.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct VerifiedEmailRow {
     pub email: String,
     pub status: String,
@@ -349,4 +357,49 @@ pub fn get_pattern_stats(conn: &Connection) -> Result<PatternStats, rusqlite::Er
         rows.collect::<Result<Vec<_>, _>>()?
     };
     Ok(PatternStats { hooks, emotions, offers })
+}
+
+/// Store or replace embedding for an ad. Embedding is stored as JSON array of f64.
+pub fn upsert_ad_embedding(conn: &Connection, ad_id: i64, embedding: &[f32]) -> Result<(), rusqlite::Error> {
+    let json: String = serde_json::to_string(
+        &embedding
+            .iter()
+            .map(|&f| f as f64)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    conn.execute("INSERT OR REPLACE INTO ad_embeddings (ad_id, embedding) VALUES (?1, ?2)", rusqlite::params![ad_id, json])?;
+    Ok(())
+}
+
+/// Get ad content, hook, offer for given ad ids. Preserves order of ids.
+pub fn get_ads_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<(String, String, String)>, rusqlite::Error> {
+    let mut out = Vec::with_capacity(ids.len());
+    for &id in ids {
+        let row = conn.query_row(
+            "SELECT content, hook, offer FROM ads WHERE id = ?1",
+            rusqlite::params![id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                ))
+            },
+        )?;
+        out.push(row);
+    }
+    Ok(out)
+}
+
+/// Load all ad embeddings for similarity search. Returns (ad_id, embedding).
+pub fn get_all_ad_embeddings(conn: &Connection) -> Result<Vec<(i64, Vec<f32>)>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT ad_id, embedding FROM ad_embeddings")?;
+    let rows = stmt.query_map([], |row| {
+        let ad_id: i64 = row.get(0)?;
+        let json: String = row.get(1)?;
+        let vec: Vec<f64> = serde_json::from_str(&json).map_err(|_| rusqlite::Error::InvalidQuery)?;
+        Ok((ad_id, vec.into_iter().map(|f| f as f32).collect()))
+    })?;
+    rows.collect()
 }

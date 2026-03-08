@@ -11,7 +11,8 @@ const COMPANY_TICKERS_URL: &str = "https://www.sec.gov/files/company_tickers.jso
 const SUBMISSIONS_BASE: &str = "https://data.sec.gov/submissions";
 
 /// One row from SEC company_tickers.json (ticker symbol -> CIK, title).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct CompanyTickerRow {
     pub cik_str: u32,
     pub ticker: String,
@@ -19,7 +20,8 @@ pub struct CompanyTickerRow {
 }
 
 /// Recent filing metadata from submissions JSON.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct FilingSummary {
     pub form: String,
     pub description: String,

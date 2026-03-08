@@ -1,6 +1,7 @@
 //! Scraping layer: fetch pages, parse HTML, extract ad-like content.
-//! Uses reqwest for HTTP and scraper for HTML. headless_chrome available for JS-heavy pages.
+//! Uses reqwest for HTTP and scraper for HTML. headless_chrome for JS-heavy "Power Mode".
 
+use headless_chrome::Browser;
 use scraper::{Html, Selector};
 use std::time::Duration;
 
@@ -78,6 +79,13 @@ const DEMO_SNIPPETS: &[(&str, &str, &str, &str, &str)] = &[
     ("No credit card required. Start free, upgrade when ready.", "No credit card", "relief", "Start free", ""),
 ];
 
+/// Scrape mode: "static" = demo/reqwest HTML, "browser" = headless Chrome for JS-heavy pages.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ScrapeMode {
+    Static,
+    Browser,
+}
+
 /// Scrapes "ads" for a given query. For now uses a demo flow: generate placeholder rows
 /// so the pipeline is testable without hitting Meta. Replace with headless_chrome + Ad Library when needed.
 /// `limit` caps how many snippets to return (e.g. 50 for future real scraping); None = use all demo snippets.
@@ -92,6 +100,68 @@ pub fn fetch_ads_for_query(query: &str, limit: Option<usize>) -> Result<Vec<AdSn
             offer: if offer.is_empty() { None } else { Some((*offer).to_string()) },
             audience: if audience.is_empty() { None } else { Some((*audience).to_string()) },
             source: Some(source.clone()),
+        })
+        .collect();
+    if let Some(max) = limit {
+        out.truncate(max);
+    }
+    Ok(out)
+}
+
+/// Fetch HTML from a URL using headless Chrome (for JS-rendered pages). Waits briefly then returns body innerHTML.
+/// proxy_url: optional proxy (e.g. "http://proxy:8080" or "socks5://…"). Must be http/https/socks5.
+pub fn fetch_html_browser(url: &str, proxy_url: Option<&str>) -> Result<String, String> {
+    let browser = if let Some(proxy) = proxy_url {
+        let proxy = proxy.trim();
+        if proxy.is_empty() {
+            Browser::default().map_err(|e| e.to_string())?
+        } else {
+            let opts = headless_chrome::browser::LaunchOptionsBuilder::default()
+                .proxy_server(Some(proxy))
+                .build()
+                .map_err(|e| e.to_string())?;
+            Browser::new(opts).map_err(|e| e.to_string())?
+        }
+    } else {
+        Browser::default().map_err(|e| e.to_string())?
+    };
+    let tab = browser.new_tab().map_err(|e| e.to_string())?;
+    tab.navigate_to(url).map_err(|e| e.to_string())?;
+    tab.wait_for_element("body").map_err(|e| e.to_string())?;
+    std::thread::sleep(Duration::from_secs(2));
+    let html = tab
+        .evaluate("document.body ? document.body.innerHTML : document.documentElement.outerHTML", false)
+        .map_err(|e| e.to_string())?
+        .value
+        .and_then(|v| v.as_str().map(String::from))
+        .ok_or_else(|| "Failed to get HTML".to_string())?;
+    Ok(html)
+}
+
+/// Scrape ad snippets from a URL using headless browser, then run pattern analysis on each snippet.
+/// Source label is set to the query (e.g. the keyword or a short URL label).
+pub fn fetch_ads_from_url_browser(
+    url: &str,
+    source_label: &str,
+    limit: Option<usize>,
+    proxy_url: Option<&str>,
+) -> Result<Vec<AdSnippet>, String> {
+    let html = fetch_html_browser(url, proxy_url)?;
+    let snippets = parse_ad_snippets(&html);
+    let analysis = crate::analysis::analyze_ad_copy;
+    let source = Some(source_label.to_string());
+    let mut out: Vec<AdSnippet> = snippets
+        .into_iter()
+        .map(|content| {
+            let parsed = analysis(&content);
+            AdSnippet {
+                content: Some(content),
+                hook: parsed.hook,
+                emotion: parsed.emotion,
+                offer: parsed.offer,
+                audience: parsed.audience,
+                source: source.clone(),
+            }
         })
         .collect();
     if let Some(max) = limit {

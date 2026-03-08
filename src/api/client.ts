@@ -25,6 +25,9 @@ export const api = {
       query: input.query,
       mode: input.mode ?? "replace",
       limit: input.limit ?? undefined,
+      scrape_mode: input.scrapeMode ?? undefined,
+      url: input.url ?? undefined,
+      proxy: input.proxy?.trim() || undefined,
     });
     return typeof result === "number" ? result : 0;
   },
@@ -46,6 +49,14 @@ export const api = {
 
   async analyzePatterns(adIds?: number[] | null): Promise<number> {
     const result = await invoke<number>("analyze_patterns", { ad_ids: adIds ?? null });
+    return typeof result === "number" ? result : 0;
+  },
+
+  /** Index ad content with embeddings for semantic search (RAG). Requires an embedding model (e.g. nomic-embed-text) in Ollama. */
+  async indexAdsEmbeddings(embeddingModel: string): Promise<number> {
+    const result = await invoke<number>("index_ads_embeddings", {
+      embedding_model: embeddingModel.trim() || "nomic-embed-text",
+    });
     return typeof result === "number" ? result : 0;
   },
 
@@ -134,8 +145,10 @@ export const api = {
     return arr.map((s) => (typeof s === "string" ? s : String(s)));
   },
 
-  async ollamaListModels(): Promise<string[]> {
-    const raw = await invoke<unknown>("ollama_list_models");
+  async ollamaListModels(ollamaBaseUrl?: string | null): Promise<string[]> {
+    const raw = await invoke<unknown>("ollama_list_models", {
+      ollama_base_url: ollamaBaseUrl?.trim() || undefined,
+    });
     const arr = Array.isArray(raw) ? raw : [];
     return arr.map((s) => (typeof s === "string" ? s : String(s)));
   },
@@ -144,13 +157,21 @@ export const api = {
     model: string,
     userMessage: string,
     timeoutSecs?: number | null,
-    systemPrompt?: string | null
+    systemPrompt?: string | null,
+    secSummaryModel?: string | null,
+    ollamaBaseUrl?: string | null,
+    numCtx?: number | null,
+    numPredict?: number | null
   ): Promise<string> {
     const result = await invoke<string>("ollama_chat", {
       model,
       userMessage,
       timeout_secs: timeoutSecs ?? undefined,
       system_prompt: systemPrompt && systemPrompt.trim() ? systemPrompt.trim() : undefined,
+      sec_summary_model: secSummaryModel?.trim() || undefined,
+      ollama_base_url: ollamaBaseUrl?.trim() || undefined,
+      num_ctx: numCtx ?? undefined,
+      num_predict: numPredict ?? undefined,
     });
     return typeof result === "string" ? result : "";
   },
@@ -159,19 +180,48 @@ export const api = {
   async ollamaChatStream(
     model: string,
     userMessage: string,
-    systemPrompt?: string | null
+    systemPrompt?: string | null,
+    secSummaryModel?: string | null,
+    ollamaBaseUrl?: string | null,
+    numCtx?: number | null,
+    numPredict?: number | null
   ): Promise<void> {
     await invoke("ollama_chat_stream", {
       model,
       userMessage,
       system_prompt: systemPrompt && systemPrompt.trim() ? systemPrompt.trim() : undefined,
+      sec_summary_model: secSummaryModel?.trim() || undefined,
+      ollama_base_url: ollamaBaseUrl?.trim() || undefined,
+      num_ctx: numCtx ?? undefined,
+      num_predict: numPredict ?? undefined,
     });
   },
 
   /** Pre-warm: load model into memory so the next request is fast. */
-  async ollamaPrewarm(model: string): Promise<void> {
+  async ollamaPrewarm(model: string, ollamaBaseUrl?: string | null): Promise<void> {
     if (!model?.trim()) return;
-    await invoke("ollama_prewarm", { model: model.trim() });
+    await invoke("ollama_prewarm", { model: model.trim(), ollama_base_url: ollamaBaseUrl?.trim() || undefined });
+  },
+
+  /** Analyze an image with an Ollama vision model. Pass image_base64 (data URL data part or raw base64). */
+  async ollamaVision(params: {
+    model: string;
+    prompt?: string | null;
+    imageBase64?: string | null;
+    ollamaBaseUrl?: string | null;
+    numCtx?: number | null;
+    numPredict?: number | null;
+  }): Promise<string> {
+    const result = await invoke<string>("ollama_vision", {
+      model: params.model?.trim() ?? "",
+      prompt: params.prompt?.trim() || undefined,
+      image_path: undefined,
+      image_base64: params.imageBase64?.trim() || undefined,
+      ollama_base_url: params.ollamaBaseUrl?.trim() || undefined,
+      num_ctx: params.numCtx ?? undefined,
+      num_predict: params.numPredict ?? undefined,
+    });
+    return typeof result === "string" ? result : "";
   },
 
   /** SEC EDGAR: company tickers (no API key). */

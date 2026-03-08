@@ -6,8 +6,9 @@ use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
 /// Verification result status.
-#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[derive(Debug, Clone, serde::Serialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum VerifyStatus {
     Ok,
     Invalid,
@@ -17,14 +18,16 @@ pub enum VerifyStatus {
 }
 
 /// Per-check results: which verification tests passed (syntax, not disposable, MX).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct VerifyTests {
     pub syntax: bool,
     pub disposable: bool, // true = not disposable (pass)
     pub mx: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct VerifyResult {
     pub email: String,
     pub status: VerifyStatus,
